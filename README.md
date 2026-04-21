@@ -1,0 +1,2 @@
+# NinjaTraderIndis
+NinjaTrader indicator
