@@ -514,18 +514,67 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
         public TimeSpan NyEnd { get; set; }
         [Browsable(false)] public string NyEndSerializable { get { return NyEnd.ToString(); } set { NyEnd = TimeSpan.Parse(value); } }
 
-        // Brushes (Filled areas)
-        [NinjaScriptProperty] [XmlIgnore] [Display(Name = "Bull Color", GroupName = "6. Fills & Text", Order = 0)]
-        public System.Windows.Media.Brush BullBrush { get; set; }
-        [Browsable(false)] public string BullBrushSer { get { return BullBrush.ToString(); } set { BullBrush = (System.Windows.Media.Brush)new BrushConverter().ConvertFromString(value); } }
+        // ── Safe Backing Fields for Brushes (Fixes NinjaTrader Cross-Thread issues) ──
+        private System.Windows.Media.Brush _bullBrush;
+        private System.Windows.Media.Brush _bearBrush;
+        private System.Windows.Media.Brush _textBrush;
 
-        [NinjaScriptProperty] [XmlIgnore] [Display(Name = "Bear Color", GroupName = "6. Fills & Text", Order = 1)]
-        public System.Windows.Media.Brush BearBrush { get; set; }
-        [Browsable(false)] public string BearBrushSer { get { return BearBrush.ToString(); } set { BearBrush = (System.Windows.Media.Brush)new BrushConverter().ConvertFromString(value); } }
+        [NinjaScriptProperty] 
+        [XmlIgnore] 
+        [Display(Name = "Bull Color", GroupName = "6. Fills & Text", Order = 0)]
+        public System.Windows.Media.Brush BullBrush 
+        { 
+            get { return _bullBrush; } 
+            set { _bullBrush = value; if (_bullBrush != null && _bullBrush.CanFreeze) _bullBrush.Freeze(); } 
+        }
+        [Browsable(false)] 
+        public string BullBrushSer 
+        { 
+            get { return _bullBrush != null ? _bullBrush.ToString() : ""; } 
+            set { 
+                var b = (System.Windows.Media.Brush)new BrushConverter().ConvertFromString(value); 
+                if (b != null && b.CanFreeze) b.Freeze(); 
+                _bullBrush = b; 
+            } 
+        }
 
-        [NinjaScriptProperty] [XmlIgnore] [Display(Name = "Timer Text Color", GroupName = "6. Fills & Text", Order = 2)]
-        public System.Windows.Media.Brush TextBrush { get; set; }
-        [Browsable(false)] public string TextBrushSer { get { return TextBrush.ToString(); } set { TextBrush = (System.Windows.Media.Brush)new BrushConverter().ConvertFromString(value); } }
+        [NinjaScriptProperty] 
+        [XmlIgnore] 
+        [Display(Name = "Bear Color", GroupName = "6. Fills & Text", Order = 1)]
+        public System.Windows.Media.Brush BearBrush 
+        { 
+            get { return _bearBrush; } 
+            set { _bearBrush = value; if (_bearBrush != null && _bearBrush.CanFreeze) _bearBrush.Freeze(); } 
+        }
+        [Browsable(false)] 
+        public string BearBrushSer 
+        { 
+            get { return _bearBrush != null ? _bearBrush.ToString() : ""; } 
+            set { 
+                var b = (System.Windows.Media.Brush)new BrushConverter().ConvertFromString(value); 
+                if (b != null && b.CanFreeze) b.Freeze(); 
+                _bearBrush = b; 
+            } 
+        }
+
+        [NinjaScriptProperty] 
+        [XmlIgnore] 
+        [Display(Name = "Timer Text Color", GroupName = "6. Fills & Text", Order = 2)]
+        public System.Windows.Media.Brush TextBrush 
+        { 
+            get { return _textBrush; } 
+            set { _textBrush = value; if (_textBrush != null && _textBrush.CanFreeze) _textBrush.Freeze(); } 
+        }
+        [Browsable(false)] 
+        public string TextBrushSer 
+        { 
+            get { return _textBrush != null ? _textBrush.ToString() : ""; } 
+            set { 
+                var b = (System.Windows.Media.Brush)new BrushConverter().ConvertFromString(value); 
+                if (b != null && b.CanFreeze) b.Freeze(); 
+                _textBrush = b; 
+            } 
+        }
 
         // Strokes (Lines)
         [NinjaScriptProperty] [Display(Name = "Wick Stroke", GroupName = "7. Lines", Order = 0)]
@@ -559,60 +608,3 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
         public Stroke NyStroke { get; set; }
     }
 }
-
-#region NinjaScript generated code. Neither change nor remove.
-
-namespace NinjaTrader.NinjaScript.Indicators
-{
-	public partial class Indicator : NinjaTrader.Gui.NinjaScript.IndicatorRenderBase
-	{
-		private TradersPack.HTFCandleOffsetv2[] cacheHTFCandleOffsetv2;
-		public TradersPack.HTFCandleOffsetv2 HTFCandleOffsetv2(BarsPeriodType hTF1Type, int hTF1Value, int numCandles1, bool showHTF2, BarsPeriodType hTF2Type, int hTF2Value, int numCandles2, int candleWidthPx, int candleGapPx, int rightMarginPx, bool showDailyLevels, bool showSessionLevels, TimeSpan asiaStart, TimeSpan asiaEnd, TimeSpan londonStart, TimeSpan londonEnd, TimeSpan nyStart, TimeSpan nyEnd, System.Windows.Media.Brush bullBrush, System.Windows.Media.Brush bearBrush, System.Windows.Media.Brush textBrush, Stroke wickStroke, Stroke boxStroke, Stroke cdoStroke, Stroke pdoStroke, Stroke pdhStroke, Stroke pdlStroke, Stroke pdcStroke, Stroke asiaStroke, Stroke londonStroke, Stroke nyStroke)
-		{
-			return HTFCandleOffsetv2(Input, hTF1Type, hTF1Value, numCandles1, showHTF2, hTF2Type, hTF2Value, numCandles2, candleWidthPx, candleGapPx, rightMarginPx, showDailyLevels, showSessionLevels, asiaStart, asiaEnd, londonStart, londonEnd, nyStart, nyEnd, bullBrush, bearBrush, textBrush, wickStroke, boxStroke, cdoStroke, pdoStroke, pdhStroke, pdlStroke, pdcStroke, asiaStroke, londonStroke, nyStroke);
-		}
-
-		public TradersPack.HTFCandleOffsetv2 HTFCandleOffsetv2(ISeries<double> input, BarsPeriodType hTF1Type, int hTF1Value, int numCandles1, bool showHTF2, BarsPeriodType hTF2Type, int hTF2Value, int numCandles2, int candleWidthPx, int candleGapPx, int rightMarginPx, bool showDailyLevels, bool showSessionLevels, TimeSpan asiaStart, TimeSpan asiaEnd, TimeSpan londonStart, TimeSpan londonEnd, TimeSpan nyStart, TimeSpan nyEnd, System.Windows.Media.Brush bullBrush, System.Windows.Media.Brush bearBrush, System.Windows.Media.Brush textBrush, Stroke wickStroke, Stroke boxStroke, Stroke cdoStroke, Stroke pdoStroke, Stroke pdhStroke, Stroke pdlStroke, Stroke pdcStroke, Stroke asiaStroke, Stroke londonStroke, Stroke nyStroke)
-		{
-			if (cacheHTFCandleOffsetv2 != null)
-				for (int idx = 0; idx < cacheHTFCandleOffsetv2.Length; idx++)
-					if (cacheHTFCandleOffsetv2[idx] != null && cacheHTFCandleOffsetv2[idx].HTF1Type == hTF1Type && cacheHTFCandleOffsetv2[idx].HTF1Value == hTF1Value && cacheHTFCandleOffsetv2[idx].NumCandles1 == numCandles1 && cacheHTFCandleOffsetv2[idx].ShowHTF2 == showHTF2 && cacheHTFCandleOffsetv2[idx].HTF2Type == hTF2Type && cacheHTFCandleOffsetv2[idx].HTF2Value == hTF2Value && cacheHTFCandleOffsetv2[idx].NumCandles2 == numCandles2 && cacheHTFCandleOffsetv2[idx].CandleWidthPx == candleWidthPx && cacheHTFCandleOffsetv2[idx].CandleGapPx == candleGapPx && cacheHTFCandleOffsetv2[idx].RightMarginPx == rightMarginPx && cacheHTFCandleOffsetv2[idx].ShowDailyLevels == showDailyLevels && cacheHTFCandleOffsetv2[idx].ShowSessionLevels == showSessionLevels && cacheHTFCandleOffsetv2[idx].AsiaStart == asiaStart && cacheHTFCandleOffsetv2[idx].AsiaEnd == asiaEnd && cacheHTFCandleOffsetv2[idx].LondonStart == londonStart && cacheHTFCandleOffsetv2[idx].LondonEnd == londonEnd && cacheHTFCandleOffsetv2[idx].NyStart == nyStart && cacheHTFCandleOffsetv2[idx].NyEnd == nyEnd && cacheHTFCandleOffsetv2[idx].BullBrush == bullBrush && cacheHTFCandleOffsetv2[idx].BearBrush == bearBrush && cacheHTFCandleOffsetv2[idx].TextBrush == textBrush && cacheHTFCandleOffsetv2[idx].WickStroke == wickStroke && cacheHTFCandleOffsetv2[idx].BoxStroke == boxStroke && cacheHTFCandleOffsetv2[idx].CdoStroke == cdoStroke && cacheHTFCandleOffsetv2[idx].PdoStroke == pdoStroke && cacheHTFCandleOffsetv2[idx].PdhStroke == pdhStroke && cacheHTFCandleOffsetv2[idx].PdlStroke == pdlStroke && cacheHTFCandleOffsetv2[idx].PdcStroke == pdcStroke && cacheHTFCandleOffsetv2[idx].AsiaStroke == asiaStroke && cacheHTFCandleOffsetv2[idx].LondonStroke == londonStroke && cacheHTFCandleOffsetv2[idx].NyStroke == nyStroke && cacheHTFCandleOffsetv2[idx].EqualsInput(input))
-						return cacheHTFCandleOffsetv2[idx];
-			return CacheIndicator<TradersPack.HTFCandleOffsetv2>(new TradersPack.HTFCandleOffsetv2(){ HTF1Type = hTF1Type, HTF1Value = hTF1Value, NumCandles1 = numCandles1, ShowHTF2 = showHTF2, HTF2Type = hTF2Type, HTF2Value = hTF2Value, NumCandles2 = numCandles2, CandleWidthPx = candleWidthPx, CandleGapPx = candleGapPx, RightMarginPx = rightMarginPx, ShowDailyLevels = showDailyLevels, ShowSessionLevels = showSessionLevels, AsiaStart = asiaStart, AsiaEnd = asiaEnd, LondonStart = londonStart, LondonEnd = londonEnd, NyStart = nyStart, NyEnd = nyEnd, BullBrush = bullBrush, BearBrush = bearBrush, TextBrush = textBrush, WickStroke = wickStroke, BoxStroke = boxStroke, CdoStroke = cdoStroke, PdoStroke = pdoStroke, PdhStroke = pdhStroke, PdlStroke = pdlStroke, PdcStroke = pdcStroke, AsiaStroke = asiaStroke, LondonStroke = londonStroke, NyStroke = nyStroke }, input, ref cacheHTFCandleOffsetv2);
-		}
-	}
-}
-
-namespace NinjaTrader.NinjaScript.MarketAnalyzerColumns
-{
-	public partial class MarketAnalyzerColumn : MarketAnalyzerColumnBase
-	{
-		public Indicators.TradersPack.HTFCandleOffsetv2 HTFCandleOffsetv2(BarsPeriodType hTF1Type, int hTF1Value, int numCandles1, bool showHTF2, BarsPeriodType hTF2Type, int hTF2Value, int numCandles2, int candleWidthPx, int candleGapPx, int rightMarginPx, bool showDailyLevels, bool showSessionLevels, TimeSpan asiaStart, TimeSpan asiaEnd, TimeSpan londonStart, TimeSpan londonEnd, TimeSpan nyStart, TimeSpan nyEnd, System.Windows.Media.Brush bullBrush, System.Windows.Media.Brush bearBrush, System.Windows.Media.Brush textBrush, Stroke wickStroke, Stroke boxStroke, Stroke cdoStroke, Stroke pdoStroke, Stroke pdhStroke, Stroke pdlStroke, Stroke pdcStroke, Stroke asiaStroke, Stroke londonStroke, Stroke nyStroke)
-		{
-			return indicator.HTFCandleOffsetv2(Input, hTF1Type, hTF1Value, numCandles1, showHTF2, hTF2Type, hTF2Value, numCandles2, candleWidthPx, candleGapPx, rightMarginPx, showDailyLevels, showSessionLevels, asiaStart, asiaEnd, londonStart, londonEnd, nyStart, nyEnd, bullBrush, bearBrush, textBrush, wickStroke, boxStroke, cdoStroke, pdoStroke, pdhStroke, pdlStroke, pdcStroke, asiaStroke, londonStroke, nyStroke);
-		}
-
-		public Indicators.TradersPack.HTFCandleOffsetv2 HTFCandleOffsetv2(ISeries<double> input , BarsPeriodType hTF1Type, int hTF1Value, int numCandles1, bool showHTF2, BarsPeriodType hTF2Type, int hTF2Value, int numCandles2, int candleWidthPx, int candleGapPx, int rightMarginPx, bool showDailyLevels, bool showSessionLevels, TimeSpan asiaStart, TimeSpan asiaEnd, TimeSpan londonStart, TimeSpan londonEnd, TimeSpan nyStart, TimeSpan nyEnd, System.Windows.Media.Brush bullBrush, System.Windows.Media.Brush bearBrush, System.Windows.Media.Brush textBrush, Stroke wickStroke, Stroke boxStroke, Stroke cdoStroke, Stroke pdoStroke, Stroke pdhStroke, Stroke pdlStroke, Stroke pdcStroke, Stroke asiaStroke, Stroke londonStroke, Stroke nyStroke)
-		{
-			return indicator.HTFCandleOffsetv2(input, hTF1Type, hTF1Value, numCandles1, showHTF2, hTF2Type, hTF2Value, numCandles2, candleWidthPx, candleGapPx, rightMarginPx, showDailyLevels, showSessionLevels, asiaStart, asiaEnd, londonStart, londonEnd, nyStart, nyEnd, bullBrush, bearBrush, textBrush, wickStroke, boxStroke, cdoStroke, pdoStroke, pdhStroke, pdlStroke, pdcStroke, asiaStroke, londonStroke, nyStroke);
-		}
-	}
-}
-
-namespace NinjaTrader.NinjaScript.Strategies
-{
-	public partial class Strategy : NinjaTrader.Gui.NinjaScript.StrategyRenderBase
-	{
-		public Indicators.TradersPack.HTFCandleOffsetv2 HTFCandleOffsetv2(BarsPeriodType hTF1Type, int hTF1Value, int numCandles1, bool showHTF2, BarsPeriodType hTF2Type, int hTF2Value, int numCandles2, int candleWidthPx, int candleGapPx, int rightMarginPx, bool showDailyLevels, bool showSessionLevels, TimeSpan asiaStart, TimeSpan asiaEnd, TimeSpan londonStart, TimeSpan londonEnd, TimeSpan nyStart, TimeSpan nyEnd, System.Windows.Media.Brush bullBrush, System.Windows.Media.Brush bearBrush, System.Windows.Media.Brush textBrush, Stroke wickStroke, Stroke boxStroke, Stroke cdoStroke, Stroke pdoStroke, Stroke pdhStroke, Stroke pdlStroke, Stroke pdcStroke, Stroke asiaStroke, Stroke londonStroke, Stroke nyStroke)
-		{
-			return indicator.HTFCandleOffsetv2(Input, hTF1Type, hTF1Value, numCandles1, showHTF2, hTF2Type, hTF2Value, numCandles2, candleWidthPx, candleGapPx, rightMarginPx, showDailyLevels, showSessionLevels, asiaStart, asiaEnd, londonStart, londonEnd, nyStart, nyEnd, bullBrush, bearBrush, textBrush, wickStroke, boxStroke, cdoStroke, pdoStroke, pdhStroke, pdlStroke, pdcStroke, asiaStroke, londonStroke, nyStroke);
-		}
-
-		public Indicators.TradersPack.HTFCandleOffsetv2 HTFCandleOffsetv2(ISeries<double> input , BarsPeriodType hTF1Type, int hTF1Value, int numCandles1, bool showHTF2, BarsPeriodType hTF2Type, int hTF2Value, int numCandles2, int candleWidthPx, int candleGapPx, int rightMarginPx, bool showDailyLevels, bool showSessionLevels, TimeSpan asiaStart, TimeSpan asiaEnd, TimeSpan londonStart, TimeSpan londonEnd, TimeSpan nyStart, TimeSpan nyEnd, System.Windows.Media.Brush bullBrush, System.Windows.Media.Brush bearBrush, System.Windows.Media.Brush textBrush, Stroke wickStroke, Stroke boxStroke, Stroke cdoStroke, Stroke pdoStroke, Stroke pdhStroke, Stroke pdlStroke, Stroke pdcStroke, Stroke asiaStroke, Stroke londonStroke, Stroke nyStroke)
-		{
-			return indicator.HTFCandleOffsetv2(input, hTF1Type, hTF1Value, numCandles1, showHTF2, hTF2Type, hTF2Value, numCandles2, candleWidthPx, candleGapPx, rightMarginPx, showDailyLevels, showSessionLevels, asiaStart, asiaEnd, londonStart, londonEnd, nyStart, nyEnd, bullBrush, bearBrush, textBrush, wickStroke, boxStroke, cdoStroke, pdoStroke, pdhStroke, pdlStroke, pdcStroke, asiaStroke, londonStroke, nyStroke);
-		}
-	}
-}
-
-#endregion
