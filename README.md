@@ -13,3 +13,14 @@ NinjaTrader indicator
 - *Smart Collision Engine*: Automatically adjusts text label rendering so prices overlapping (e.g., CDO and London High) slide side-by-side without creating unreadable clutter.
 - *Independent Live Timers*: Features live bar-close countdown timers hovered dynamically over the current active candles for your selected HTFs.
 - *100% Customizable Visuals*: Tweak candle colors, wick thickness, margins, gaps, session time brackets, and line dash styles seamlessly via the NinjaTrader UI.
+
+
+# Anchored VWAP Pro
+NinjaTrader Drawing Tool
+
+## 🚀 Features
+
+-Point and Click Anchored VWAP Drawing Tool
+-Upto x5 Deviation Bands
+-Bands hide button at anchor point to keep chart clutter free.
+-100% Customizable Visuals
