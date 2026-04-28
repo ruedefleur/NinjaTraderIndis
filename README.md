@@ -20,7 +20,7 @@ NinjaTrader Drawing Tool
 
 ## 🚀 Features
 
--Point and Click Anchored VWAP Drawing Tool
--Upto x5 Deviation Bands
--Bands hide button at anchor point to keep chart clutter free.
--100% Customizable Visuals
+- *Point and Click Anchored VWAP Drawing Tool
+- *Upto x5 Deviation Bands
+- *Bands hide button at anchor point to keep chart clutter free.
+- *100% Customizable Visuals
