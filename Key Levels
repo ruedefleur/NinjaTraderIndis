@@ -1,0 +1,691 @@
+// KeyLevels.cs — NinjaTrader 8 Indicator
+
+
+#region Using declarations
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
+using System.Windows.Media;
+using System.Xml.Serialization;
+using NinjaTrader.Data;
+using NinjaTrader.Gui;
+using NinjaTrader.Gui.Chart;
+using NinjaTrader.Gui.Tools;
+using NinjaTrader.NinjaScript;
+using NinjaTrader.NinjaScript.DrawingTools;
+#endregion
+
+namespace NinjaTrader.NinjaScript.Indicators
+{
+    [CategoryOrder("Global",     0)]
+    [CategoryOrder("Visibility", 1)]
+    [CategoryOrder("Sessions",   2)]
+    [CategoryOrder("Colors",     3)]
+    [CategoryOrder("Display",    4)]
+    [System.ComponentModel.CategoryAttribute("TradersPack")]
+    public class KeyLevels : Indicator
+    {
+        private static readonly Brush SlateGray = Brushes.SlateGray;
+
+        // ── Session Data Wrapper ────────────────────────────────────────
+        private class SessionData
+        {
+            public bool     Active;
+            public DateTime SessionDate = DateTime.MinValue;
+            public double   O, H, L;
+            public int      Bar, HBar, LBar;
+            
+            public double   PrevO, PrevH, PrevL;
+            public int      PrevBar, PrevHBar, PrevLBar;
+        }
+
+        private SessionData _london = new SessionData();
+        private SessionData _ny     = new SessionData();
+        private SessionData _asia   = new SessionData();
+
+        // ── Period open bars (left anchor for Open lines) ───────────────
+        private int _dBar, _wBar, _mBar, _yBar, _monBar;
+
+        // ── Period date/year trackers ───────────────────────────────────
+        private DateTime _currentWeekDate  = DateTime.MinValue;
+        private DateTime _currentMonthDate = DateTime.MinValue;
+        private int      _currentYear      = -1;
+        private DateTime _lastMondayDate   = DateTime.MinValue;
+
+        // ── Open prices ─────────────────────────────────────────────────
+        private double _dO, _wO, _mO, _yO;
+
+        // ── Current-period running H/L + their exact bar indices ────────
+        private double _curDayH,   _curDayL;
+        private int    _curDayHBar,_curDayLBar;
+
+        private double _curWeekH,   _curWeekL;
+        private int    _curWeekHBar,_curWeekLBar;
+
+        private double _curMonthH,   _curMonthL;
+        private int    _curMonthHBar,_curMonthLBar;
+
+        private double _curYearH,   _curYearL;
+        private int    _curYearHBar,_curYearLBar;
+
+        // ── Completed-period snapshots: value + exact bar ───────────────
+        private double _pdH,  _pdL;   private int _pdHBar,  _pdLBar;
+        private double _pwH,  _pwL;   private int _pwHBar,  _pwLBar;
+        private double _pmH,  _pmL;   private int _pmHBar,  _pmLBar;
+        private double _cyH,  _cyL;   private int _cyHBar,  _cyLBar;
+        private double _monH, _monL;  
+        private int    _monHBar, _monLBar;
+
+        // ── Life-cycle ──────────────────────────────────────────────────
+        protected override void OnStateChange()
+        {
+            if (State == State.SetDefaults)
+            {
+                Name             = "Key Levels";
+                Description      = "Multi-timeframe key price levels";
+                Calculate        = Calculate.OnBarClose;
+                IsOverlay        = true;
+                DisplayInDataBox = false;
+                DrawOnPricePanel = true;
+
+                UseGlobalColor    = false;
+                GlobalColor       = SlateGray;
+
+                ShowDailyOpen     = true;
+                ShowPrevDayHL     = true;
+                ShowWeeklyOpen    = true;
+                ShowPrevWeekHL    = true;
+                ShowMonthlyOpen   = true;
+                ShowPrevMonthHL   = true;
+                ShowYearlyOpen    = true;
+                ShowCurrentYearHL = false;
+                ShowMondayRange   = true;
+
+                ShowLondonHL      = false;
+                ShowLondonOpen    = false;
+                LondonStart       = DateTime.Parse("03:00", System.Globalization.CultureInfo.InvariantCulture);
+                LondonEnd         = DateTime.Parse("12:00", System.Globalization.CultureInfo.InvariantCulture);
+
+                ShowNYHL          = false;
+                ShowNYOpen        = false;
+                NYStart           = DateTime.Parse("08:00", System.Globalization.CultureInfo.InvariantCulture);
+                NYEnd             = DateTime.Parse("17:00", System.Globalization.CultureInfo.InvariantCulture);
+
+                ShowAsiaHL        = false;
+                ShowAsiaOpen      = false;
+                AsiaStart         = DateTime.Parse("20:00", System.Globalization.CultureInfo.InvariantCulture);
+                AsiaEnd           = DateTime.Parse("02:00", System.Globalization.CultureInfo.InvariantCulture);
+
+                DailyColor   = SlateGray;
+                WeeklyColor  = SlateGray;
+                MonthlyColor = SlateGray;
+                YearlyColor  = SlateGray;
+                MondayColor  = SlateGray;
+                LondonColor  = SlateGray;
+                NYColor      = SlateGray;
+                AsiaColor    = SlateGray;
+
+                LineWidth           = 1;
+                ExtendBars          = 30;
+                LabelCollisionTicks = 10;
+            }
+        }
+
+        // ── Main loop ───────────────────────────────────────────────────
+        protected override void OnBarUpdate()
+        {
+            if (BarsInProgress != 0) return;
+            if (CurrentBar      < 2) return;
+
+            UpdateDailyData();
+            UpdateWeeklyData();
+            UpdateMonthlyData();
+            UpdateYearlyData();
+            UpdateMondayRange();
+            UpdateSessions();
+            DrawAllLevels();
+        }
+
+        private Brush C(Brush perLevel) => UseGlobalColor ? GlobalColor : perLevel;
+
+        // Helper: Shifts Sunday evening (Forex/Futures) forward to align with Monday
+        private DateTime GetAdjustedDate(DateTime time)
+        {
+            if (time.DayOfWeek == DayOfWeek.Sunday && time.Hour >= 15)
+                return time.Date.AddDays(1);
+            return time.Date;
+        }
+
+        // ── HTF data refresh ────────────────────────────────────────────
+
+        private void UpdateDailyData()
+        {
+            if (Bars.IsFirstBarOfSession || _dBar == 0)
+            {
+                if (_dBar > 0)
+                {
+                    _pdH = _curDayH; _pdHBar = _curDayHBar;
+                    _pdL = _curDayL; _pdLBar = _curDayLBar;
+                }
+                _dBar    = CurrentBar;
+                _dO      = Open[0];
+                _curDayH = High[0]; _curDayHBar = CurrentBar;
+                _curDayL = Low[0];  _curDayLBar = CurrentBar;
+            }
+            else
+            {
+                if (High[0] > _curDayH) { _curDayH = High[0]; _curDayHBar = CurrentBar; }
+                if (Low[0]  < _curDayL) { _curDayL = Low[0];  _curDayLBar = CurrentBar; }
+            }
+        }
+
+        private void UpdateWeeklyData()
+        {
+            DateTime today = GetAdjustedDate(Time[0]);
+            int dow = (int)today.DayOfWeek;
+            DateTime weekStart = today.AddDays(-(dow == 0 ? 6 : dow - 1));
+
+            if (weekStart != _currentWeekDate)
+            {
+                if (_currentWeekDate != DateTime.MinValue)
+                {
+                    _pwH = _curWeekH; _pwHBar = _curWeekHBar;
+                    _pwL = _curWeekL; _pwLBar = _curWeekLBar;
+                }
+                _currentWeekDate = weekStart;
+                _wBar     = CurrentBar;
+                _wO       = Open[0];
+                _curWeekH = High[0]; _curWeekHBar = CurrentBar;
+                _curWeekL = Low[0];  _curWeekLBar = CurrentBar;
+            }
+            else
+            {
+                if (High[0] > _curWeekH) { _curWeekH = High[0]; _curWeekHBar = CurrentBar; }
+                if (Low[0]  < _curWeekL) { _curWeekL = Low[0];  _curWeekLBar = CurrentBar; }
+            }
+        }
+
+        private void UpdateMonthlyData()
+        {
+            DateTime today     = Time[0].Date;
+            DateTime thisMonth = new DateTime(today.Year, today.Month, 1);
+
+            if (thisMonth != _currentMonthDate)
+            {
+                if (_currentMonthDate != DateTime.MinValue)
+                {
+                    _pmH = _curMonthH; _pmHBar = _curMonthHBar;
+                    _pmL = _curMonthL; _pmLBar = _curMonthLBar;
+                }
+                _currentMonthDate = thisMonth;
+                _mBar      = CurrentBar;
+                _mO        = Open[0];
+                _curMonthH = High[0]; _curMonthHBar = CurrentBar;
+                _curMonthL = Low[0];  _curMonthLBar = CurrentBar;
+            }
+            else
+            {
+                if (High[0] > _curMonthH) { _curMonthH = High[0]; _curMonthHBar = CurrentBar; }
+                if (Low[0]  < _curMonthL) { _curMonthL = Low[0];  _curMonthLBar = CurrentBar; }
+            }
+        }
+
+        private void UpdateYearlyData()
+        {
+            int thisYear = Time[0].Year;
+
+            if (thisYear != _currentYear)
+            {
+                _currentYear = thisYear;
+                _yBar     = CurrentBar;
+                _yO       = Open[0];
+                _curYearH = High[0]; _curYearHBar = CurrentBar;
+                _curYearL = Low[0];  _curYearLBar = CurrentBar;
+                _cyH = _curYearH; _cyHBar = _curYearHBar;
+                _cyL = _curYearL; _cyLBar = _curYearLBar;
+            }
+            else
+            {
+                if (High[0] > _curYearH) { _curYearH = High[0]; _curYearHBar = CurrentBar; _cyH = _curYearH; _cyHBar = CurrentBar; }
+                if (Low[0]  < _curYearL) { _curYearL = Low[0];  _curYearLBar = CurrentBar; _cyL = _curYearL; _cyLBar = CurrentBar; }
+            }
+        }
+
+        private void UpdateMondayRange()
+        {
+            if (!ShowMondayRange) return;
+            DateTime today = GetAdjustedDate(Time[0]);
+            if (today.DayOfWeek != DayOfWeek.Monday) return;
+
+            if (today != _lastMondayDate)
+            {
+                _lastMondayDate = today;
+                _monBar  = CurrentBar;
+                _monH    = High[0]; _monHBar = CurrentBar;
+                _monL    = Low[0];  _monLBar = CurrentBar;
+            }
+            else
+            {
+                if (High[0] > _monH) { _monH = High[0]; _monHBar = CurrentBar; }
+                if (Low[0]  < _monL) { _monL = Low[0];  _monLBar = CurrentBar; }
+            }
+        }
+
+        // ── Session tracking ────────────────────────────────────────────
+        private void UpdateSessions()
+        {
+            if (ShowLondonHL || ShowLondonOpen)
+                TrackSession(ToTime(LondonStart), ToTime(LondonEnd), _london);
+
+            if (ShowNYHL || ShowNYOpen)
+                TrackSession(ToTime(NYStart), ToTime(NYEnd), _ny);
+
+            if (ShowAsiaHL || ShowAsiaOpen)
+                TrackSession(ToTime(AsiaStart), ToTime(AsiaEnd), _asia);
+        }
+
+        private void TrackSession(int start, int end, SessionData sd)
+        {
+            int t = ToTime(Time[0]);
+            DateTime date = Time[0].Date;
+            bool crossesMidnight = start > end;
+            
+            // Accurately assesses bar inclusion regardless of local crossing into next calendar day
+            bool inSession = crossesMidnight ? (t > start || t <= end) : (t > start && t <= end);
+
+            if (inSession)
+            {
+                // Tag the session consistently, resolving overnight bar fragmentation into previous day's identifier
+                DateTime sessionIdentifier = crossesMidnight && (t <= end) ? date.AddDays(-1) : date;
+
+                if (sessionIdentifier != sd.SessionDate)
+                {
+                    if (sd.Active) 
+                    {
+                        sd.PrevO = sd.O; sd.PrevH = sd.H; sd.PrevL = sd.L; 
+                        sd.PrevBar = sd.Bar; sd.PrevHBar = sd.HBar; sd.PrevLBar = sd.LBar;
+                    }
+                    sd.SessionDate = sessionIdentifier;
+                    sd.Active = true;
+                    sd.O = Open[0];
+                    sd.H = High[0]; sd.HBar = CurrentBar;
+                    sd.L = Low[0];  sd.LBar = CurrentBar;
+                    sd.Bar = CurrentBar;
+                }
+                else if (!sd.Active)
+                {
+                    // Case when indicator is freshly compiled or loaded mid-session
+                    sd.Active = true;
+                    sd.O = Open[0];
+                    sd.H = High[0]; sd.HBar = CurrentBar;
+                    sd.L = Low[0];  sd.LBar = CurrentBar;
+                    sd.Bar = CurrentBar;
+                }
+                else
+                {
+                    // Running update
+                    if (High[0] > sd.H) { sd.H = High[0]; sd.HBar = CurrentBar; }
+                    if (Low[0]  < sd.L) { sd.L = Low[0];  sd.LBar = CurrentBar; }
+                }
+            }
+            else if (sd.Active)
+            {
+                // End of session, save for drawing
+                sd.PrevO = sd.O; sd.PrevH = sd.H; sd.PrevL = sd.L; 
+                sd.PrevBar = sd.Bar; sd.PrevHBar = sd.HBar; sd.PrevLBar = sd.LBar;
+                sd.Active = false;
+            }
+        }
+
+        // ── Drawing ─────────────────────────────────────────────────────
+        private struct LevelInfo
+        {
+            public string Tag;
+            public double Price;
+            public int    StartBar;
+            public Brush  Color;
+            public string Label;
+        }
+
+        private void DrawAllLevels()
+        {
+            bool isIntraday = Bars.BarsType.IsIntraday;
+            var  levels     = new List<LevelInfo>(24);
+
+            // Daily (intraday only)
+            if (isIntraday)
+            {
+                if (ShowDailyOpen && _dO > 0)
+                    levels.Add(new LevelInfo { Tag="DO",  Price=_dO,  StartBar=_dBar,   Color=C(DailyColor), Label="Daily Open" });
+                if (ShowPrevDayHL && _pdH > 0)
+                {
+                    levels.Add(new LevelInfo { Tag="PDH", Price=_pdH, StartBar=_pdHBar, Color=C(DailyColor), Label="Prev Day High" });
+                    levels.Add(new LevelInfo { Tag="PDL", Price=_pdL, StartBar=_pdLBar, Color=C(DailyColor), Label="Prev Day Low" });
+                }
+            }
+
+            // Weekly
+            if (ShowWeeklyOpen && _wO > 0)
+                levels.Add(new LevelInfo { Tag="WO",  Price=_wO,  StartBar=_wBar,   Color=C(WeeklyColor), Label="Weekly Open" });
+            if (ShowPrevWeekHL && _pwH > 0)
+            {
+                levels.Add(new LevelInfo { Tag="PWH", Price=_pwH, StartBar=_pwHBar, Color=C(WeeklyColor), Label="Prev Week High" });
+                levels.Add(new LevelInfo { Tag="PWL", Price=_pwL, StartBar=_pwLBar, Color=C(WeeklyColor), Label="Prev Week Low" });
+            }
+
+            // Monthly
+            if (ShowMonthlyOpen && _mO > 0)
+                levels.Add(new LevelInfo { Tag="MO",  Price=_mO,  StartBar=_mBar,   Color=C(MonthlyColor), Label="Monthly Open" });
+            if (ShowPrevMonthHL && _pmH > 0)
+            {
+                levels.Add(new LevelInfo { Tag="PMH", Price=_pmH, StartBar=_pmHBar, Color=C(MonthlyColor), Label="Prev Month High" });
+                levels.Add(new LevelInfo { Tag="PML", Price=_pmL, StartBar=_pmLBar, Color=C(MonthlyColor), Label="Prev Month Low" });
+            }
+
+            // Yearly
+            if (ShowYearlyOpen && _yO > 0)
+                levels.Add(new LevelInfo { Tag="YO",  Price=_yO,  StartBar=_yBar,   Color=C(YearlyColor), Label="Yearly Open" });
+            if (ShowCurrentYearHL && _cyH > 0)
+            {
+                levels.Add(new LevelInfo { Tag="CYH", Price=_cyH, StartBar=_cyHBar, Color=C(YearlyColor), Label="Curr Year High" });
+                levels.Add(new LevelInfo { Tag="CYL", Price=_cyL, StartBar=_cyLBar, Color=C(YearlyColor), Label="Curr Year Low" });
+            }
+
+            // Monday Range
+            if (ShowMondayRange && _monH > 0)
+            {
+                levels.Add(new LevelInfo { Tag="MonH", Price=_monH, StartBar=_monHBar, Color=C(MondayColor), Label="Monday High" });
+                levels.Add(new LevelInfo { Tag="MonL", Price=_monL, StartBar=_monLBar, Color=C(MondayColor), Label="Monday Low" });
+            }
+
+            // Sessions
+            if (ShowLondonHL || ShowLondonOpen)
+            {
+                double lonH    = _london.Active ? _london.H : _london.PrevH;
+                double lonL    = _london.Active ? _london.L : _london.PrevL;
+                double lonO    = _london.Active ? _london.O : _london.PrevO;
+                int    lonHBar = _london.Active ? _london.HBar : _london.PrevHBar;
+                int    lonLBar = _london.Active ? _london.LBar : _london.PrevLBar;
+                int    lonOBar = _london.Active ? _london.Bar  : _london.PrevBar;
+                
+                if (lonH > 0)
+                {
+                    if (ShowLondonHL)
+                    {
+                        levels.Add(new LevelInfo { Tag="LonH", Price=lonH, StartBar=lonHBar, Color=C(LondonColor), Label="London High" });
+                        levels.Add(new LevelInfo { Tag="LonL", Price=lonL, StartBar=lonLBar, Color=C(LondonColor), Label="London Low" });
+                    }
+                    if (ShowLondonOpen)
+                        levels.Add(new LevelInfo { Tag="LonO", Price=lonO, StartBar=lonOBar, Color=C(LondonColor), Label=$"London Open ({LondonStart:HH:mm})" });
+                }
+            }
+            if (ShowNYHL || ShowNYOpen)
+            {
+                double nyH    = _ny.Active ? _ny.H : _ny.PrevH;
+                double nyL    = _ny.Active ? _ny.L : _ny.PrevL;
+                double nyO    = _ny.Active ? _ny.O : _ny.PrevO;
+                int    nyHBar = _ny.Active ? _ny.HBar : _ny.PrevHBar;
+                int    nyLBar = _ny.Active ? _ny.LBar : _ny.PrevLBar;
+                int    nyOBar = _ny.Active ? _ny.Bar  : _ny.PrevBar;
+                
+                if (nyH > 0)
+                {
+                    if (ShowNYHL)
+                    {
+                        levels.Add(new LevelInfo { Tag="NYH", Price=nyH, StartBar=nyHBar, Color=C(NYColor), Label="NY High" });
+                        levels.Add(new LevelInfo { Tag="NYL", Price=nyL, StartBar=nyLBar, Color=C(NYColor), Label="NY Low" });
+                    }
+                    if (ShowNYOpen)
+                        levels.Add(new LevelInfo { Tag="NYO", Price=nyO, StartBar=nyOBar, Color=C(NYColor), Label=$"NY Open ({NYStart:HH:mm})" });
+                }
+            }
+            if (ShowAsiaHL || ShowAsiaOpen)
+            {
+                double asH    = _asia.Active ? _asia.H : _asia.PrevH;
+                double asL    = _asia.Active ? _asia.L : _asia.PrevL;
+                double asO    = _asia.Active ? _asia.O : _asia.PrevO;
+                int    asHBar = _asia.Active ? _asia.HBar : _asia.PrevHBar;
+                int    asLBar = _asia.Active ? _asia.LBar : _asia.PrevLBar;
+                int    asOBar = _asia.Active ? _asia.Bar  : _asia.PrevBar;
+                
+                if (asH > 0)
+                {
+                    if (ShowAsiaHL)
+                    {
+                        levels.Add(new LevelInfo { Tag="AsH", Price=asH, StartBar=asHBar, Color=C(AsiaColor), Label="Asia High" });
+                        levels.Add(new LevelInfo { Tag="AsL", Price=asL, StartBar=asLBar, Color=C(AsiaColor), Label="Asia Low" });
+                    }
+                    if (ShowAsiaOpen)
+                        levels.Add(new LevelInfo { Tag="AsO", Price=asO, StartBar=asOBar, Color=C(AsiaColor), Label=$"Asia Open ({AsiaStart:HH:mm})" });
+                }
+            }
+
+            // Sort by price ascending, assign label y-offsets to avoid collisions,
+            levels.Sort((a, b) => a.Price.CompareTo(b.Price));
+
+            double threshold = LabelCollisionTicks * TickSize;
+            int[] slotPixels = new int[levels.Count];
+            for (int i = 0; i < levels.Count; i++)
+            {
+                int slot = 0;
+                for (int j = i - 1; j >= 0; j--)
+                {
+                    if (levels[i].Price - levels[j].Price < threshold)
+                        slot = Math.Max(slot, slotPixels[j] + 13);
+                    else
+                        break;
+                }
+                slotPixels[i] = slot;
+                DrawLevel(levels[i].Tag, levels[i].Price, levels[i].StartBar,
+                          levels[i].Color, levels[i].Label, slot);
+            }
+        }
+
+        private void DrawLevel(string tag, double price, int startBar,
+                                Brush color, string labelText, int yOffset = 0)
+        {
+            int barsBack = Math.Max(0, CurrentBar - startBar);
+
+            Draw.Line(this, tag, true,
+                barsBack, price,
+                -ExtendBars, price,
+                color, DashStyleHelper.Solid, LineWidth);
+
+            Draw.Text(this, tag + "_lbl", true,
+                labelText,
+                -ExtendBars + 1, price, yOffset,
+                color,
+                new SimpleFont("Arial", 10),
+                System.Windows.TextAlignment.Left,
+                Brushes.Transparent, Brushes.Transparent, 0);
+        }
+
+        // ── Properties ──────────────────────────────────────────────────
+
+        #region Global
+        [NinjaScriptProperty]
+        [Display(Name = "Use Global Color", GroupName = "Global", Order = 1,
+                 Description = "When enabled, all levels use the single color below.")]
+        public bool UseGlobalColor { get; set; }
+
+        [NinjaScriptProperty][XmlIgnore]
+        [Display(Name = "Global Color", GroupName = "Global", Order = 2)]
+        public Brush GlobalColor { get; set; }
+        [Browsable(false)]
+        public string GlobalColorSerialize
+        { get { return Serialize.BrushToString(GlobalColor); } set { GlobalColor = Serialize.StringToBrush(value); } }
+        #endregion
+
+        #region Visibility
+        [NinjaScriptProperty]
+        [Display(Name = "Daily Open",       GroupName = "Visibility", Order = 1)]
+        public bool ShowDailyOpen { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Prev Day H/L",     GroupName = "Visibility", Order = 2)]
+        public bool ShowPrevDayHL { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Weekly Open",      GroupName = "Visibility", Order = 3)]
+        public bool ShowWeeklyOpen { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Prev Week H/L",    GroupName = "Visibility", Order = 4)]
+        public bool ShowPrevWeekHL { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Monthly Open",     GroupName = "Visibility", Order = 5)]
+        public bool ShowMonthlyOpen { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Prev Month H/L",   GroupName = "Visibility", Order = 6)]
+        public bool ShowPrevMonthHL { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Yearly Open",      GroupName = "Visibility", Order = 7)]
+        public bool ShowYearlyOpen { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Current Year H/L", GroupName = "Visibility", Order = 8)]
+        public bool ShowCurrentYearHL { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "Monday Range H/L", GroupName = "Visibility", Order = 9)]
+        public bool ShowMondayRange { get; set; }
+        #endregion
+
+        #region Sessions
+        [NinjaScriptProperty]
+        [Display(Name = "1. Show London H/L", GroupName = "Sessions", Order = 1)]
+        public bool ShowLondonHL { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "2. Show London Open", GroupName = "Sessions", Order = 2)]
+        public bool ShowLondonOpen { get; set; }
+
+        [NinjaScriptProperty]
+        [PropertyEditor("NinjaTrader.Gui.Tools.TimeEditorKey")]
+        [Display(Name = "3. London Start", GroupName = "Sessions", Order = 3)]
+        public DateTime LondonStart { get; set; }
+
+        [NinjaScriptProperty]
+        [PropertyEditor("NinjaTrader.Gui.Tools.TimeEditorKey")]
+        [Display(Name = "4. London End", GroupName = "Sessions", Order = 4)]
+        public DateTime LondonEnd { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "5. Show New York H/L", GroupName = "Sessions", Order = 5)]
+        public bool ShowNYHL { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "6. Show New York Open", GroupName = "Sessions", Order = 6)]
+        public bool ShowNYOpen { get; set; }
+
+        [NinjaScriptProperty]
+        [PropertyEditor("NinjaTrader.Gui.Tools.TimeEditorKey")]
+        [Display(Name = "7. New York Start", GroupName = "Sessions", Order = 7)]
+        public DateTime NYStart { get; set; }
+
+        [NinjaScriptProperty]
+        [PropertyEditor("NinjaTrader.Gui.Tools.TimeEditorKey")]
+        [Display(Name = "8. New York End", GroupName = "Sessions", Order = 8)]
+        public DateTime NYEnd { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "9. Show Asia H/L", GroupName = "Sessions", Order = 9)]
+        public bool ShowAsiaHL { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "10. Show Asia Open", GroupName = "Sessions", Order = 10)]
+        public bool ShowAsiaOpen { get; set; }
+
+        [NinjaScriptProperty]
+        [PropertyEditor("NinjaTrader.Gui.Tools.TimeEditorKey")]
+        [Display(Name = "11. Asia Start", GroupName = "Sessions", Order = 11)]
+        public DateTime AsiaStart { get; set; }
+
+        [NinjaScriptProperty]
+        [PropertyEditor("NinjaTrader.Gui.Tools.TimeEditorKey")]
+        [Display(Name = "12. Asia End", GroupName = "Sessions", Order = 12)]
+        public DateTime AsiaEnd { get; set; }
+        #endregion
+
+        #region Colors
+        [NinjaScriptProperty][XmlIgnore]
+        [Display(Name = "Daily",    GroupName = "Colors", Order = 1)]
+        public Brush DailyColor { get; set; }
+        [Browsable(false)]
+        public string DailyColorSerialize
+        { get { return Serialize.BrushToString(DailyColor); } set { DailyColor = Serialize.StringToBrush(value); } }
+
+        [NinjaScriptProperty][XmlIgnore]
+        [Display(Name = "Weekly",   GroupName = "Colors", Order = 2)]
+        public Brush WeeklyColor { get; set; }
+        [Browsable(false)]
+        public string WeeklyColorSerialize
+        { get { return Serialize.BrushToString(WeeklyColor); } set { WeeklyColor = Serialize.StringToBrush(value); } }
+
+        [NinjaScriptProperty][XmlIgnore]
+        [Display(Name = "Monthly",  GroupName = "Colors", Order = 3)]
+        public Brush MonthlyColor { get; set; }
+        [Browsable(false)]
+        public string MonthlyColorSerialize
+        { get { return Serialize.BrushToString(MonthlyColor); } set { MonthlyColor = Serialize.StringToBrush(value); } }
+
+        [NinjaScriptProperty][XmlIgnore]
+        [Display(Name = "Yearly",   GroupName = "Colors", Order = 4)]
+        public Brush YearlyColor { get; set; }
+        [Browsable(false)]
+        public string YearlyColorSerialize
+        { get { return Serialize.BrushToString(YearlyColor); } set { YearlyColor = Serialize.StringToBrush(value); } }
+
+        [NinjaScriptProperty][XmlIgnore]
+        [Display(Name = "Monday",   GroupName = "Colors", Order = 5)]
+        public Brush MondayColor { get; set; }
+        [Browsable(false)]
+        public string MondayColorSerialize
+        { get { return Serialize.BrushToString(MondayColor); } set { MondayColor = Serialize.StringToBrush(value); } }
+
+        [NinjaScriptProperty][XmlIgnore]
+        [Display(Name = "London",   GroupName = "Colors", Order = 6)]
+        public Brush LondonColor { get; set; }
+        [Browsable(false)]
+        public string LondonColorSerialize
+        { get { return Serialize.BrushToString(LondonColor); } set { LondonColor = Serialize.StringToBrush(value); } }
+
+        [NinjaScriptProperty][XmlIgnore]
+        [Display(Name = "New York", GroupName = "Colors", Order = 7)]
+        public Brush NYColor { get; set; }
+        [Browsable(false)]
+        public string NYColorSerialize
+        { get { return Serialize.BrushToString(NYColor); } set { NYColor = Serialize.StringToBrush(value); } }
+
+        [NinjaScriptProperty][XmlIgnore]
+        [Display(Name = "Asia",     GroupName = "Colors", Order = 8)]
+        public Brush AsiaColor { get; set; }
+        [Browsable(false)]
+        public string AsiaColorSerialize
+        { get { return Serialize.BrushToString(AsiaColor); } set { AsiaColor = Serialize.StringToBrush(value); } }
+        #endregion
+
+        #region Display
+        [NinjaScriptProperty]
+        [Range(1, 5)]
+        [Display(Name = "Line Width",        GroupName = "Display", Order = 1)]
+        public int LineWidth { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(5, 200)]
+        [Display(Name = "Extend Bars Right", GroupName = "Display", Order = 2)]
+        public int ExtendBars { get; set; }
+
+        [NinjaScriptProperty]
+        [Range(0, 50)]
+        [Display(Name = "Label Collision Ticks",
+                 Description = "When two levels are within this many ticks of each other their labels are staggered vertically so both are readable. Set 0 to disable.",
+                 GroupName = "Display", Order = 3)]
+        public int LabelCollisionTicks { get; set; }
+        #endregion
+    }
+}
