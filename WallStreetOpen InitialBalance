@@ -1,0 +1,279 @@
+#region Using declarations
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Xml.Serialization;
+using NinjaTrader.Cbi;
+using NinjaTrader.Gui;
+using NinjaTrader.Gui.Chart;
+using NinjaTrader.Gui.SuperDom;
+using NinjaTrader.Gui.Tools;
+using NinjaTrader.Data;
+using NinjaTrader.NinjaScript;
+using NinjaTrader.Core.FloatingPoint;
+using NinjaTrader.NinjaScript.DrawingTools;
+#endregion
+
+namespace NinjaTrader.NinjaScript.Indicators
+{
+	public class WallStreetOpeningRanges : Indicator
+	{
+		private double high945;
+		private double low945;
+		private double high1030;
+		private double low1030;
+		private bool range945Set;
+		private bool range1030Set;
+
+		// Variables for Asia & London
+		private double highAsia;
+		private double lowAsia;
+		private bool asiaSet;
+
+		private double highLondon;
+		private double lowLondon;
+		private bool londonSet;
+
+		// Tracker to ensure we only reset variables exactly once per session
+		private int lastSessionBar = -1;
+
+		protected override void OnStateChange()
+		{
+			if (State == State.SetDefaults)
+			{
+				Description									= @"Plots Wall Street, Asia, and London Opening Ranges";
+				Name										= "WallStreetOpeningRanges";
+				Calculate									= Calculate.OnEachTick;
+				IsOverlay									= true;
+				DisplayInDataBox							= true;
+				DrawOnPricePanel							= true;
+				DrawHorizontalGridLines						= false;
+				DrawVerticalGridLines						= false;
+				PaintPriceMarkers							= true;
+				ScaleJustification							= NinjaTrader.Gui.Chart.ScaleJustification.Right;
+				IsSuspendedWhileInactive					= true;
+
+				// Default Toggles
+				ShowWallStreet								= true;
+				ShowAsia									= true;
+				ShowLondon									= true;
+
+				// Default times (HHMMSS format)
+				AsiaStartTime								= 200000;
+				AsiaEndTime									= 220000;
+				LondonStartTime								= 030000;
+				LondonEndTime								= 040000;
+
+				// Wall Street Plots
+				AddPlot(new Stroke(Brushes.Orange, 2), PlotStyle.Line, "High 9:45");
+				AddPlot(new Stroke(Brushes.Orange, 2), PlotStyle.Line, "Low 9:45");
+				AddPlot(new Stroke(Brushes.RoyalBlue, 2), PlotStyle.Line, "High 10:30");
+				AddPlot(new Stroke(Brushes.RoyalBlue, 2), PlotStyle.Line, "Low 10:30");
+
+				// Asia & London Plots
+				AddPlot(new Stroke(Brushes.Crimson, 2), PlotStyle.Line, "Asia High");
+				AddPlot(new Stroke(Brushes.Crimson, 2), PlotStyle.Line, "Asia Low");
+				AddPlot(new Stroke(Brushes.SeaGreen, 2), PlotStyle.Line, "London High");
+				AddPlot(new Stroke(Brushes.SeaGreen, 2), PlotStyle.Line, "London Low");
+			}
+		}
+
+		protected override void OnBarUpdate()
+		{
+			// Safe guard against missing data or daily charts
+			if (CurrentBar < 0 || BarsPeriod.BarsPeriodType == BarsPeriodType.Day)
+				return;
+
+			// Reset logic EXACTLY once at the beginning of a new session
+			if (Bars.IsFirstBarOfSession && CurrentBar != lastSessionBar)
+			{
+				lastSessionBar = CurrentBar;
+
+				high945 = 0; low945 = double.MaxValue; range945Set = false;
+				high1030 = 0; low1030 = double.MaxValue; range1030Set = false;
+
+				highAsia = 0; lowAsia = double.MaxValue; asiaSet = false;
+				highLondon = 0; lowLondon = double.MaxValue; londonSet = false;
+			}
+
+			// Convert current bar time to an integer (HHMMSS)
+			int nowTime = ToTime(Time[0]);
+
+			// --- 1. Logic for Wall Street ---
+			if (ShowWallStreet)
+			{
+				if (nowTime >= 093000 && nowTime <= 094500)
+				{
+					high945 = Math.Max(high945, High[0]);
+					low945 = Math.Min(low945, Low[0]);
+					range945Set = true;
+				}
+
+				if (nowTime >= 093000 && nowTime <= 103000)
+				{
+					high1030 = Math.Max(high1030, High[0]);
+					low1030 = Math.Min(low1030, Low[0]);
+					range1030Set = true;
+				}
+
+				// Plot values (checks bounds to prevent crashes)
+				if (Values.Length >= 4)
+				{
+					if (range945Set)
+					{
+						Values[0][0] = high945;
+						Values[1][0] = low945;
+					}
+					if (range1030Set)
+					{
+						Values[2][0] = high1030;
+						Values[3][0] = low1030;
+					}
+				}
+			}
+
+			// --- 2. Logic for Asia Range ---
+			if (ShowAsia)
+			{
+				if (IsTimeInRange(nowTime, AsiaStartTime, AsiaEndTime))
+				{
+					highAsia = Math.Max(highAsia, High[0]);
+					lowAsia = Math.Min(lowAsia, Low[0]);
+					asiaSet = true;
+				}
+
+				if (asiaSet && Values.Length >= 6)
+				{
+					Values[4][0] = highAsia;
+					Values[5][0] = lowAsia;
+				}
+			}
+
+			// --- 3. Logic for London Range ---
+			if (ShowLondon)
+			{
+				if (IsTimeInRange(nowTime, LondonStartTime, LondonEndTime))
+				{
+					highLondon = Math.Max(highLondon, High[0]);
+					lowLondon = Math.Min(lowLondon, Low[0]);
+					londonSet = true;
+				}
+
+				if (londonSet && Values.Length >= 8)
+				{
+					Values[6][0] = highLondon;
+					Values[7][0] = lowLondon;
+				}
+			}
+		}
+
+		// Helper method to safely calculate times (even when they cross Midnight)
+		private bool IsTimeInRange(int time, int startTime, int endTime)
+		{
+			if (startTime <= endTime)
+				return time >= startTime && time <= endTime;
+			else
+				return time >= startTime || time <= endTime; // Handles crossing 00:00:00 midnight
+		}
+
+		#region Properties
+
+		[NinjaScriptProperty]
+		[Display(Name="Show Wall Street", Order=1, GroupName="1. Toggles")]
+		public bool ShowWallStreet { get; set; }
+
+		[NinjaScriptProperty]
+		[Display(Name="Show Asia", Order=2, GroupName="1. Toggles")]
+		public bool ShowAsia { get; set; }
+
+		[NinjaScriptProperty]
+		[Display(Name="Show London", Order=3, GroupName="1. Toggles")]
+		public bool ShowLondon { get; set; }
+
+		[NinjaScriptProperty]
+		[Range(0, 235959)]
+		[Display(Name="Asia Start Time", Description="Format HHMMSS", Order=1, GroupName="2. Session Times")]
+		public int AsiaStartTime { get; set; }
+
+		[NinjaScriptProperty]
+		[Range(0, 235959)]
+		[Display(Name="Asia End Time", Description="Format HHMMSS", Order=2, GroupName="2. Session Times")]
+		public int AsiaEndTime { get; set; }
+
+		[NinjaScriptProperty]
+		[Range(0, 235959)]
+		[Display(Name="London Start Time", Description="Format HHMMSS", Order=3, GroupName="2. Session Times")]
+		public int LondonStartTime { get; set; }
+
+		[NinjaScriptProperty]
+		[Range(0, 235959)]
+		[Display(Name="London End Time", Description="Format HHMMSS", Order=4, GroupName="2. Session Times")]
+		public int LondonEndTime { get; set; }
+
+		#endregion
+	}
+}
+
+#region NinjaScript generated code. Neither change nor remove.
+
+namespace NinjaTrader.NinjaScript.Indicators
+{
+	public partial class Indicator : NinjaTrader.Gui.NinjaScript.IndicatorRenderBase
+	{
+		private WallStreetOpeningRanges[] cacheWallStreetOpeningRanges;
+		public WallStreetOpeningRanges WallStreetOpeningRanges(bool showWallStreet, bool showAsia, bool showLondon, int asiaStartTime, int asiaEndTime, int londonStartTime, int londonEndTime)
+		{
+			return WallStreetOpeningRanges(Input, showWallStreet, showAsia, showLondon, asiaStartTime, asiaEndTime, londonStartTime, londonEndTime);
+		}
+
+		public WallStreetOpeningRanges WallStreetOpeningRanges(ISeries<double> input, bool showWallStreet, bool showAsia, bool showLondon, int asiaStartTime, int asiaEndTime, int londonStartTime, int londonEndTime)
+		{
+			if (cacheWallStreetOpeningRanges != null)
+				for (int idx = 0; idx < cacheWallStreetOpeningRanges.Length; idx++)
+					if (cacheWallStreetOpeningRanges[idx] != null && cacheWallStreetOpeningRanges[idx].ShowWallStreet == showWallStreet && cacheWallStreetOpeningRanges[idx].ShowAsia == showAsia && cacheWallStreetOpeningRanges[idx].ShowLondon == showLondon && cacheWallStreetOpeningRanges[idx].AsiaStartTime == asiaStartTime && cacheWallStreetOpeningRanges[idx].AsiaEndTime == asiaEndTime && cacheWallStreetOpeningRanges[idx].LondonStartTime == londonStartTime && cacheWallStreetOpeningRanges[idx].LondonEndTime == londonEndTime && cacheWallStreetOpeningRanges[idx].EqualsInput(input))
+						return cacheWallStreetOpeningRanges[idx];
+			return CacheIndicator<WallStreetOpeningRanges>(new WallStreetOpeningRanges(){ ShowWallStreet = showWallStreet, ShowAsia = showAsia, ShowLondon = showLondon, AsiaStartTime = asiaStartTime, AsiaEndTime = asiaEndTime, LondonStartTime = londonStartTime, LondonEndTime = londonEndTime }, input, ref cacheWallStreetOpeningRanges);
+		}
+	}
+}
+
+namespace NinjaTrader.NinjaScript.MarketAnalyzerColumns
+{
+	public partial class MarketAnalyzerColumn : MarketAnalyzerColumnBase
+	{
+		public Indicators.WallStreetOpeningRanges WallStreetOpeningRanges(bool showWallStreet, bool showAsia, bool showLondon, int asiaStartTime, int asiaEndTime, int londonStartTime, int londonEndTime)
+		{
+			return indicator.WallStreetOpeningRanges(Input, showWallStreet, showAsia, showLondon, asiaStartTime, asiaEndTime, londonStartTime, londonEndTime);
+		}
+
+		public Indicators.WallStreetOpeningRanges WallStreetOpeningRanges(ISeries<double> input , bool showWallStreet, bool showAsia, bool showLondon, int asiaStartTime, int asiaEndTime, int londonStartTime, int londonEndTime)
+		{
+			return indicator.WallStreetOpeningRanges(input, showWallStreet, showAsia, showLondon, asiaStartTime, asiaEndTime, londonStartTime, londonEndTime);
+		}
+	}
+}
+
+namespace NinjaTrader.NinjaScript.Strategies
+{
+	public partial class Strategy : NinjaTrader.Gui.NinjaScript.StrategyRenderBase
+	{
+		public Indicators.WallStreetOpeningRanges WallStreetOpeningRanges(bool showWallStreet, bool showAsia, bool showLondon, int asiaStartTime, int asiaEndTime, int londonStartTime, int londonEndTime)
+		{
+			return indicator.WallStreetOpeningRanges(Input, showWallStreet, showAsia, showLondon, asiaStartTime, asiaEndTime, londonStartTime, londonEndTime);
+		}
+
+		public Indicators.WallStreetOpeningRanges WallStreetOpeningRanges(ISeries<double> input , bool showWallStreet, bool showAsia, bool showLondon, int asiaStartTime, int asiaEndTime, int londonStartTime, int londonEndTime)
+		{
+			return indicator.WallStreetOpeningRanges(input, showWallStreet, showAsia, showLondon, asiaStartTime, asiaEndTime, londonStartTime, londonEndTime);
+		}
+	}
+}
+
+#endregion
