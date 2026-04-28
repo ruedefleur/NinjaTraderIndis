@@ -4,7 +4,7 @@ NinjaTrader indicator
 
 *HTF Candle Offset v2* is a highly customizable, open-source custom indicator for NinjaTrader 8. It allows traders to cleanly overlay Higher Timeframe (HTF) candles directly onto their active lower timeframe charts. Built with efficiency in mind, it utilizes SharpDX (Direct2D/DirectWrite) to render directly onto the chart with zero lag.
 
-![HTF Candle Offset v2 Preview](https://via.placeholder.com/800x400.png?text=Add+a+Screenshot+Here!) (Don't forget to replace this with an actual screenshot!)
+
 
 ## 🚀 Features
 
