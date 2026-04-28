@@ -1,0 +1,505 @@
+#region Using declarations
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
+using System.Xml.Serialization;
+using System.Windows.Input;
+using NinjaTrader.Core.FloatingPoint;
+using NinjaTrader.Gui;
+using NinjaTrader.Gui.Chart;
+using NinjaTrader.Gui.DrawingTools;
+using SharpDX;
+using SharpDX.Direct2D1;
+using Brush = System.Windows.Media.Brush;
+using Point = System.Windows.Point;
+#endregion
+
+namespace NinjaTrader.NinjaScript.DrawingTools
+{
+    public class FofAnchoredVwap : DrawingTool
+    {
+        public enum PriceSource { Close, HLC3, HL2, OHLC4 }
+
+        #region Private Variables
+        private bool     _bandsVisible      = true;
+        private bool     _mouseIsDown       = false;
+        private bool     _isDragging        = false;
+        private Point    _mouseDownLocation;
+        private DateTime _mouseDownTime;
+        private double   _dragSlotOffset    = 0;
+
+        private struct BarData
+        {
+            public double CumVol, CumPV, CumPV2, Vwap, StdDev;
+        }
+
+        private List<BarData> _cache                = new List<BarData>();
+        private int           _startBarIndex        = -1;
+        private PriceSource   _lastCalculatedSource = PriceSource.HLC3;
+
+        private SharpDX.Direct2D1.SolidColorBrush dxFill1, dxFill2, dxFill3, dxFill4, dxFill5, dxHighlight;
+
+        // Cached arrays to prevent garbage collection frame-stuttering
+        private Vector2[] _vwapPts = new Vector2[0];
+        private Vector2[] _u1Pts = new Vector2[0], _d1Pts = new Vector2[0];
+        private Vector2[] _u2Pts = new Vector2[0], _d2Pts = new Vector2[0];
+        private Vector2[] _u3Pts = new Vector2[0], _d3Pts = new Vector2[0];
+        private Vector2[] _u4Pts = new Vector2[0], _d4Pts = new Vector2[0];
+        private Vector2[] _u5Pts = new Vector2[0], _d5Pts = new Vector2[0];
+
+        private const float HitRadius     = 30f;
+        private const int   DragThreshold = 5;
+        private const int   ClickMaxMs    = 300;
+        #endregion
+
+        protected override void OnStateChange()
+        {
+            if (State == State.SetDefaults)
+            {
+                Name         = "Anchored VWAP Pro";
+                Description  = "Anchored VWAP with Standard Deviation Bands";
+                DrawingState = DrawingState.Building;
+
+                PriceSourceInput = PriceSource.HLC3;
+                VwapStroke       = new Stroke(System.Windows.Media.Brushes.Yellow, 2);
+
+                ShowBand1 = true; ShowBand2 = true; ShowBand3 = true; ShowBand4 = true; ShowBand5 = true;
+                Dev1Mult  = 1.0;  Dev2Mult  = 2.0;  Dev3Mult  = 3.0;  Dev4Mult  = 4.0;  Dev5Mult  = 5.0;
+
+                Band1Stroke = new Stroke(System.Windows.Media.Brushes.LimeGreen,  1);
+                Band2Stroke = new Stroke(System.Windows.Media.Brushes.DodgerBlue, 1);
+                Band3Stroke = new Stroke(System.Windows.Media.Brushes.Orange,     1);
+                Band4Stroke = new Stroke(System.Windows.Media.Brushes.Red,        1);
+                Band5Stroke = new Stroke(System.Windows.Media.Brushes.Magenta,    1);
+
+                Fill1Opacity = 15; Fill2Opacity = 15; Fill3Opacity = 15; Fill4Opacity = 15; Fill5Opacity = 15;
+                
+                Fill1 = System.Windows.Media.Brushes.DarkGreen;
+                Fill2 = System.Windows.Media.Brushes.DarkBlue;
+                Fill3 = System.Windows.Media.Brushes.DarkOrange;
+                Fill4 = System.Windows.Media.Brushes.DarkRed;
+                Fill5 = System.Windows.Media.Brushes.Purple;
+
+                Anchor = new ChartAnchor
+                {
+                    DisplayName        = "Anchor",
+                    IsEditing          = true,
+                    IsYPropertyVisible = false
+                };
+            }
+            else if (State == State.Terminated)
+            {
+                DisposeBrushes();
+                _cache?.Clear();
+            }
+        }
+
+        #region Mouse Handling
+        private bool IsNearAnchor(ChartControl cc, ChartPanel cp, ChartScale cs, ChartAnchor dataPoint)
+        {
+            if (Anchor == null || cc == null || cp == null || cs == null) return false;
+            return (dataPoint.GetPoint(cc, cp, cs) - Anchor.GetPoint(cc, cp, cs)).Length <= HitRadius;
+        }
+
+        public override Cursor GetCursor(ChartControl chartControl, ChartPanel chartPanel, ChartScale chartScale, Point point)
+        {
+            if (DrawingState == DrawingState.Building) return Cursors.Pen;
+            if (Anchor == null || chartControl == null || chartPanel == null || chartScale == null) return null;
+            return (point - Anchor.GetPoint(chartControl, chartPanel, chartScale)).Length <= HitRadius ? Cursors.Hand : null;
+        }
+
+        public override void OnMouseDown(ChartControl chartControl, ChartPanel chartPanel, ChartScale chartScale, ChartAnchor dataPoint)
+        {
+            if (DrawingState == DrawingState.Building)
+            {
+                dataPoint.CopyDataValues(Anchor);
+                Anchor.IsEditing = false;
+                DrawingState     = DrawingState.Normal;
+                ForceRecalculate();
+                return;
+            }
+
+            if (DrawingState != DrawingState.Normal) return;
+
+            // _mouseIsDown is only flagged true if you click ON the anchor dot itself
+            if (IsNearAnchor(chartControl, chartPanel, chartScale, dataPoint))
+            {
+                _mouseIsDown       = true;
+                _isDragging        = false;
+                _mouseDownLocation = dataPoint.GetPoint(chartControl, chartPanel, chartScale);
+                _mouseDownTime     = DateTime.Now;
+                _dragSlotOffset    = Anchor.SlotIndex - dataPoint.SlotIndex;
+                IsSelected         = true;
+            }
+            else
+            {
+                IsSelected = false;
+            }
+        }
+
+        public override void OnMouseMove(ChartControl chartControl, ChartPanel chartPanel, ChartScale chartScale, ChartAnchor dataPoint)
+        {
+            if (!_mouseIsDown) return;
+
+            Point current = dataPoint.GetPoint(chartControl, chartPanel, chartScale);
+
+            if (!_isDragging && (current - _mouseDownLocation).Length > DragThreshold)
+            {
+                _isDragging  = true;
+                DrawingState = DrawingState.Moving;
+            }
+
+            if (_isDragging && !IsLocked)
+            {
+                Anchor.SlotIndex = Math.Max(0, (int)Math.Round(dataPoint.SlotIndex + _dragSlotOffset));
+                ForceRecalculate();
+            }
+        }
+
+        public override void OnMouseUp(ChartControl chartControl, ChartPanel chartPanel, ChartScale chartScale, ChartAnchor dataPoint)
+        {
+            if (!_mouseIsDown) return;
+
+            bool wasDragging = _isDragging;
+            _mouseIsDown = false;
+            _isDragging  = false;
+
+            if (DrawingState == DrawingState.Moving)
+            {
+                DrawingState = DrawingState.Normal;
+                ForceRecalculate();
+            }
+
+            // Restore single-click toggle. Only triggers if clicked on the anchor without dragging.
+            if (!wasDragging && (DateTime.Now - _mouseDownTime).TotalMilliseconds < ClickMaxMs)
+            {
+                _bandsVisible = !_bandsVisible;
+            }
+
+            ForceRefresh();
+        }
+        #endregion
+
+        #region Math
+        private void ForceRecalculate()
+        {
+            _cache.Clear();
+            _startBarIndex = -1;
+        }
+
+        private double GetPrice(ChartBars bars, int i)
+        {
+            switch (PriceSourceInput)
+            {
+                case PriceSource.Close:  return bars.Bars.GetClose(i);
+                case PriceSource.HL2:    return (bars.Bars.GetHigh(i) + bars.Bars.GetLow(i)) / 2.0;
+                case PriceSource.OHLC4:  return (bars.Bars.GetOpen(i) + bars.Bars.GetHigh(i) + bars.Bars.GetLow(i) + bars.Bars.GetClose(i)) / 4.0;
+                default:                 return (bars.Bars.GetHigh(i) + bars.Bars.GetLow(i)  + bars.Bars.GetClose(i)) / 3.0;
+            }
+        }
+
+        private void CalculateCache(ChartBars bars)
+        {
+            if (Anchor == null || bars?.Bars == null) return;
+
+            int slot = (int)Anchor.SlotIndex;
+            if (slot < 0 || slot >= bars.Bars.Count) return;
+
+            if (_startBarIndex != slot || _lastCalculatedSource != PriceSourceInput)
+            {
+                ForceRecalculate();
+                _startBarIndex        = slot;
+                _lastCalculatedSource = PriceSourceInput;
+
+                // Sync Price and Time explicitly (CRITICAL for visual smoothness during drag)
+                Anchor.Price = GetPrice(bars, slot);
+                Anchor.Time  = bars.Bars.GetTime(slot);
+            }
+
+            int start = _cache.Count == 0 ? slot : Math.Min(slot + _cache.Count - 1, bars.Bars.Count - 1);
+
+            for (int i = start; i < bars.Bars.Count; i++)
+            {
+                double price = GetPrice(bars, i);
+                double vol   = bars.Bars.GetVolume(i);
+
+                double pVol = 0, pPV = 0, pPV2 = 0;
+                if (i > slot && _cache.Count > 0)
+                {
+                    var p = _cache[i - slot - 1];
+                    pVol = p.CumVol; pPV = p.CumPV; pPV2 = p.CumPV2;
+                }
+
+                double cumVol   = pVol + vol;
+                double cumPV    = pPV  + price * vol;
+                double cumPV2   = pPV2 + price * price * vol;
+                double vwap     = cumVol > 0 ? cumPV / cumVol : price;
+                double variance = cumVol > 0 ? cumPV2 / cumVol - vwap * vwap : 0;
+                double stdDev   = variance > 0 ? Math.Sqrt(variance) : 0;
+
+                var bd = new BarData { CumVol = cumVol, CumPV = cumPV, CumPV2 = cumPV2, Vwap = vwap, StdDev = stdDev };
+
+                int idx = i - slot;
+                if (idx < _cache.Count) _cache[idx] = bd;
+                else                    _cache.Add(bd);
+            }
+        }
+        #endregion
+
+        #region Rendering
+        public override void OnRenderTargetChanged()
+        {
+            DisposeBrushes();
+            if (RenderTarget == null) return;
+
+            VwapStroke.RenderTarget  = RenderTarget;
+            Band1Stroke.RenderTarget = RenderTarget; Band2Stroke.RenderTarget = RenderTarget;
+            Band3Stroke.RenderTarget = RenderTarget; Band4Stroke.RenderTarget = RenderTarget;
+            Band5Stroke.RenderTarget = RenderTarget;
+
+            dxFill1     = ToDxBrush(Fill1, RenderTarget, Fill1Opacity / 100f);
+            dxFill2     = ToDxBrush(Fill2, RenderTarget, Fill2Opacity / 100f);
+            dxFill3     = ToDxBrush(Fill3, RenderTarget, Fill3Opacity / 100f);
+            dxFill4     = ToDxBrush(Fill4, RenderTarget, Fill4Opacity / 100f);
+            dxFill5     = ToDxBrush(Fill5, RenderTarget, Fill5Opacity / 100f);
+            dxHighlight = new SharpDX.Direct2D1.SolidColorBrush(RenderTarget, new Color4(1f, 1f, 1f, 0.25f));
+        }
+
+        private void DisposeBrushes()
+        {
+            try
+            {
+                dxFill1?.Dispose();     dxFill1     = null;
+                dxFill2?.Dispose();     dxFill2     = null;
+                dxFill3?.Dispose();     dxFill3     = null;
+                dxFill4?.Dispose();     dxFill4     = null;
+                dxFill5?.Dispose();     dxFill5     = null;
+                dxHighlight?.Dispose(); dxHighlight = null;
+            }
+            catch { }
+        }
+
+        private SharpDX.Direct2D1.SolidColorBrush ToDxBrush(Brush brush, RenderTarget rt, float opacity)
+        {
+            if (brush is System.Windows.Media.SolidColorBrush scb)
+                return new SharpDX.Direct2D1.SolidColorBrush(rt, new Color4(scb.Color.R / 255f, scb.Color.G / 255f, scb.Color.B / 255f, opacity));
+            return new SharpDX.Direct2D1.SolidColorBrush(rt, Color4.Black);
+        }
+
+        public override void OnRender(ChartControl chartControl, ChartScale chartScale)
+        {
+            try
+            {
+                if (Anchor == null || Anchor.IsEditing || chartControl == null || chartScale == null) return;
+                if (chartScale.PanelIndex < 0 || chartScale.PanelIndex >= chartControl.ChartPanels.Count) return;
+
+                ChartPanel panel = chartControl.ChartPanels[chartScale.PanelIndex];
+                if (panel == null) return;
+
+                ChartBars bars = AttachedTo?.ChartObject as ChartBars
+                              ?? (AttachedTo?.ChartObject as Gui.NinjaScript.IChartBars)?.ChartBars;
+                if (bars?.Bars == null) return;
+
+                CalculateCache(bars);
+                if (_cache.Count == 0 || _startBarIndex < 0) return;
+
+                RenderTarget.AntialiasMode = AntialiasMode.PerPrimitive;
+
+                Point av  = Anchor.GetPoint(chartControl, panel, chartScale);
+                var   av2 = av.ToVector2();
+
+                if (IsSelected || DrawingState == DrawingState.Moving)
+                    RenderTarget.FillEllipse(new SharpDX.Direct2D1.Ellipse(av2, 18f, 18f), dxHighlight);
+
+                RenderTarget.DrawEllipse(new SharpDX.Direct2D1.Ellipse(av2, 6f, 6f), VwapStroke.BrushDX, 2f);
+                if (_bandsVisible)
+                    RenderTarget.FillEllipse(new SharpDX.Direct2D1.Ellipse(av2, 3f, 3f), VwapStroke.BrushDX);
+
+                float canvasW   = panel.W;
+                int   drawStart = -1, drawEnd = -1;
+
+                for (int i = 0; i < _cache.Count; i++)
+                {
+                    int barIdx = _startBarIndex + i;
+                    if (barIdx >= bars.Bars.Count) break;
+                    float x = chartControl.GetXByBarIndex(bars, barIdx);
+                    if (drawStart == -1 && x >= -200f)         drawStart = i;
+                    if (drawStart != -1 && x > canvasW + 200f) { drawEnd  = i; break; }
+                }
+
+                if (drawStart == -1) return;
+                if (drawEnd   == -1) drawEnd = _cache.Count - 1;
+                if (drawStart  > 0)  drawStart--;
+                if (drawEnd < _cache.Count - 1) drawEnd++;
+
+                int n = drawEnd - drawStart + 1;
+                if (n < 2) return;
+
+                // Dynamically resize arrays conditionally to prevent Garbage Collection allocations
+                if (n > _vwapPts.Length)
+                {
+                    int bufferSize = n + 500; 
+                    _vwapPts = new Vector2[bufferSize];
+                    _u1Pts = new Vector2[bufferSize]; _d1Pts = new Vector2[bufferSize];
+                    _u2Pts = new Vector2[bufferSize]; _d2Pts = new Vector2[bufferSize];
+                    _u3Pts = new Vector2[bufferSize]; _d3Pts = new Vector2[bufferSize];
+                    _u4Pts = new Vector2[bufferSize]; _d4Pts = new Vector2[bufferSize];
+                    _u5Pts = new Vector2[bufferSize]; _d5Pts = new Vector2[bufferSize];
+                }
+
+                int valid = n;
+                for (int i = 0; i < n; i++)
+                {
+                    int ci  = drawStart + i;
+                    int bar = _startBarIndex + ci;
+                    if (ci >= _cache.Count || bar >= bars.Bars.Count) { valid = i; break; }
+
+                    var cd = _cache[ci];
+                    float x = chartControl.GetXByBarIndex(bars, bar);
+                    _vwapPts[i] = new Vector2(x, chartScale.GetYByValue(cd.Vwap));
+
+                    if (!_bandsVisible) continue;
+                    
+                    // Unconditionally compute bounds to guarantee fills won't spike out of range if missing
+                    float dev = (float)cd.StdDev;
+                    _u1Pts[i] = new Vector2(x, chartScale.GetYByValue(cd.Vwap + dev * Dev1Mult));
+                    _d1Pts[i] = new Vector2(x, chartScale.GetYByValue(cd.Vwap - dev * Dev1Mult));
+                    _u2Pts[i] = new Vector2(x, chartScale.GetYByValue(cd.Vwap + dev * Dev2Mult));
+                    _d2Pts[i] = new Vector2(x, chartScale.GetYByValue(cd.Vwap - dev * Dev2Mult));
+                    _u3Pts[i] = new Vector2(x, chartScale.GetYByValue(cd.Vwap + dev * Dev3Mult));
+                    _d3Pts[i] = new Vector2(x, chartScale.GetYByValue(cd.Vwap - dev * Dev3Mult));
+                    _u4Pts[i] = new Vector2(x, chartScale.GetYByValue(cd.Vwap + dev * Dev4Mult));
+                    _d4Pts[i] = new Vector2(x, chartScale.GetYByValue(cd.Vwap - dev * Dev4Mult));
+                    _u5Pts[i] = new Vector2(x, chartScale.GetYByValue(cd.Vwap + dev * Dev5Mult));
+                    _d5Pts[i] = new Vector2(x, chartScale.GetYByValue(cd.Vwap - dev * Dev5Mult));
+                }
+
+                if (valid < 2) return;
+
+                DrawPath(_vwapPts, valid, VwapStroke);
+
+                if (_bandsVisible)
+                {
+                    // Render paths & their distinct fills
+                    if (ShowBand1) {
+                        if (Fill1Opacity > 0) { DrawFill(_vwapPts, _u1Pts, valid, dxFill1); DrawFill(_vwapPts, _d1Pts, valid, dxFill1); }
+                        DrawPath(_u1Pts, valid, Band1Stroke); DrawPath(_d1Pts, valid, Band1Stroke);
+                    }
+                    if (ShowBand2) {
+                        if (Fill2Opacity > 0) { DrawFill(_u1Pts, _u2Pts, valid, dxFill2); DrawFill(_d1Pts, _d2Pts, valid, dxFill2); }
+                        DrawPath(_u2Pts, valid, Band2Stroke); DrawPath(_d2Pts, valid, Band2Stroke);
+                    }
+                    if (ShowBand3) {
+                        if (Fill3Opacity > 0) { DrawFill(_u2Pts, _u3Pts, valid, dxFill3); DrawFill(_d2Pts, _d3Pts, valid, dxFill3); }
+                        DrawPath(_u3Pts, valid, Band3Stroke); DrawPath(_d3Pts, valid, Band3Stroke);
+                    }
+                    if (ShowBand4) {
+                        if (Fill4Opacity > 0) { DrawFill(_u3Pts, _u4Pts, valid, dxFill4); DrawFill(_d3Pts, _d4Pts, valid, dxFill4); }
+                        DrawPath(_u4Pts, valid, Band4Stroke); DrawPath(_d4Pts, valid, Band4Stroke);
+                    }
+                    if (ShowBand5) {
+                        if (Fill5Opacity > 0) { DrawFill(_u4Pts, _u5Pts, valid, dxFill5); DrawFill(_d4Pts, _d5Pts, valid, dxFill5); }
+                        DrawPath(_u5Pts, valid, Band5Stroke); DrawPath(_d5Pts, valid, Band5Stroke);
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private void DrawPath(Vector2[] pts, int count, Stroke stroke)
+        {
+            if (pts == null || count < 2) return;
+            using (var geom = new SharpDX.Direct2D1.PathGeometry(RenderTarget.Factory))
+            using (var sink = geom.Open())
+            {
+                sink.BeginFigure(pts[0], FigureBegin.Hollow);
+                for (int i = 1; i < count; i++) sink.AddLine(pts[i]);
+                sink.EndFigure(FigureEnd.Open);
+                sink.Close();
+                RenderTarget.DrawGeometry(geom, stroke.BrushDX, stroke.Width, stroke.StrokeStyle);
+            }
+        }
+
+        private void DrawFill(Vector2[] inner, Vector2[] outer, int count, SharpDX.Direct2D1.Brush brush)
+        {
+            if (inner == null || outer == null || count < 2 || brush == null) return;
+            using (var geom = new SharpDX.Direct2D1.PathGeometry(RenderTarget.Factory))
+            using (var sink = geom.Open())
+            {
+                sink.BeginFigure(inner[0], FigureBegin.Filled);
+                for (int i = 1; i < count; i++)      sink.AddLine(inner[i]);
+                sink.AddLine(outer[count - 1]);
+                for (int i = count - 2; i >= 0; i--) sink.AddLine(outer[i]);
+                sink.EndFigure(FigureEnd.Closed);
+                sink.Close();
+                RenderTarget.FillGeometry(geom, brush);
+            }
+        }
+        #endregion
+
+        #region NT8 Overrides
+        public override IEnumerable<ChartAnchor> Anchors { get { yield return Anchor; } }
+
+        public override Point[] GetSelectionPoints(ChartControl c, ChartScale s)
+        {
+            if (Anchor == null || Anchor.IsEditing || c == null || s == null) return new Point[0];
+            if (s.PanelIndex < 0 || s.PanelIndex >= c.ChartPanels.Count) return new Point[0];
+            ChartPanel panel = c.ChartPanels[s.PanelIndex];
+            if (panel == null) return new Point[0];
+            return new[] { Anchor.GetPoint(c, panel, s) };
+        }
+
+        public override bool IsVisibleOnChart(ChartControl c, ChartScale s, DateTime f, DateTime l)
+        {
+            return Anchor != null && !Anchor.IsEditing;
+        }
+        #endregion
+
+        #region Properties
+        public ChartAnchor Anchor { get; set; }
+
+        [Display(Name = "Price Source", Order = 1, GroupName = "1. Parameters")]
+        public PriceSource PriceSourceInput { get; set; }
+
+        [Display(Name = "VWAP Stroke", Order = 1, GroupName = "2. Strokes")]
+        public Stroke VwapStroke { get; set; }
+
+        [Display(Name = "Show Band 1", Order = 1,  GroupName = "3. Deviations")] public bool ShowBand1 { get; set; }
+        [Display(Name = "Show Band 2", Order = 2,  GroupName = "3. Deviations")] public bool ShowBand2 { get; set; }
+        [Display(Name = "Show Band 3", Order = 3,  GroupName = "3. Deviations")] public bool ShowBand3 { get; set; }
+        [Display(Name = "Show Band 4", Order = 4,  GroupName = "3. Deviations")] public bool ShowBand4 { get; set; }
+        [Display(Name = "Show Band 5", Order = 5,  GroupName = "3. Deviations")] public bool ShowBand5 { get; set; }
+
+        [Display(Name = "Dev 1 Multiplier", Order = 6,  GroupName = "3. Deviations")] public double Dev1Mult { get; set; }
+        [Display(Name = "Dev 2 Multiplier", Order = 7,  GroupName = "3. Deviations")] public double Dev2Mult { get; set; }
+        [Display(Name = "Dev 3 Multiplier", Order = 8,  GroupName = "3. Deviations")] public double Dev3Mult { get; set; }
+        [Display(Name = "Dev 4 Multiplier", Order = 9,  GroupName = "3. Deviations")] public double Dev4Mult { get; set; }
+        [Display(Name = "Dev 5 Multiplier", Order = 10, GroupName = "3. Deviations")] public double Dev5Mult { get; set; }
+
+        [Display(Name = "Band 1 Stroke", Order = 11, GroupName = "3. Deviations")] public Stroke Band1Stroke { get; set; }
+        [Display(Name = "Band 2 Stroke", Order = 12, GroupName = "3. Deviations")] public Stroke Band2Stroke { get; set; }
+        [Display(Name = "Band 3 Stroke", Order = 13, GroupName = "3. Deviations")] public Stroke Band3Stroke { get; set; }
+        [Display(Name = "Band 4 Stroke", Order = 14, GroupName = "3. Deviations")] public Stroke Band4Stroke { get; set; }
+        [Display(Name = "Band 5 Stroke", Order = 15, GroupName = "3. Deviations")] public Stroke Band5Stroke { get; set; }
+
+        [XmlIgnore] [Display(Name = "Fill 1 Color", Order = 1, GroupName = "4. Fills")] public Brush Fill1 { get; set; }
+        [XmlIgnore] [Display(Name = "Fill 2 Color", Order = 3, GroupName = "4. Fills")] public Brush Fill2 { get; set; }
+        [XmlIgnore] [Display(Name = "Fill 3 Color", Order = 5, GroupName = "4. Fills")] public Brush Fill3 { get; set; }
+        [XmlIgnore] [Display(Name = "Fill 4 Color", Order = 7, GroupName = "4. Fills")] public Brush Fill4 { get; set; }
+        [XmlIgnore] [Display(Name = "Fill 5 Color", Order = 9, GroupName = "4. Fills")] public Brush Fill5 { get; set; }
+
+        [Range(0, 100)] [Display(Name = "Fill 1 Opacity %", Order = 2, GroupName = "4. Fills")] public int Fill1Opacity { get; set; }
+        [Range(0, 100)] [Display(Name = "Fill 2 Opacity %", Order = 4, GroupName = "4. Fills")] public int Fill2Opacity { get; set; }
+        [Range(0, 100)] [Display(Name = "Fill 3 Opacity %", Order = 6, GroupName = "4. Fills")] public int Fill3Opacity { get; set; }
+        [Range(0, 100)] [Display(Name = "Fill 4 Opacity %", Order = 8, GroupName = "4. Fills")] public int Fill4Opacity { get; set; }
+        [Range(0, 100)] [Display(Name = "Fill 5 Opacity %", Order = 10, GroupName = "4. Fills")] public int Fill5Opacity { get; set; }
+
+        [Browsable(false)] public string Fill1Serialize { get => Serialize.BrushToString(Fill1); set => Fill1 = Serialize.StringToBrush(value); }
+        [Browsable(false)] public string Fill2Serialize { get => Serialize.BrushToString(Fill2); set => Fill2 = Serialize.StringToBrush(value); }
+        [Browsable(false)] public string Fill3Serialize { get => Serialize.BrushToString(Fill3); set => Fill3 = Serialize.StringToBrush(value); }
+        [Browsable(false)] public string Fill4Serialize { get => Serialize.BrushToString(Fill4); set => Fill4 = Serialize.StringToBrush(value); }
+        [Browsable(false)] public string Fill5Serialize { get => Serialize.BrushToString(Fill5); set => Fill5 = Serialize.StringToBrush(value); }
+        #endregion
+    }
+}
