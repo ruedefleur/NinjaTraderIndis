@@ -24,3 +24,13 @@ NinjaTrader Drawing Tool
 - Upto x5 Deviation Bands
 - Bands hide button at anchor point to keep chart clutter free.
 - 100% Customizable Visuals
+
+# Key Levels indicator
+Ninjatrader Indicator
+
+## 🚀 Features
+
+ - All Session levels NY, LDN, ASA
+ - Previous Day, Week, Month Year Oen High Lows
+ - Configurable colours. Universal, Lines Labels etc
+ 
