@@ -33,4 +33,12 @@ Ninjatrader Indicator
  - All Session levels NY, LDN, ASA
  - Previous Day, Week, Month Year Oen High Lows
  - Configurable colours. Universal, Lines Labels etc
- 
+
+ # WallStreet Opening Indicator
+
+ ## 🚀 Features
+
+ - Plots the Initial Balances for all three session openings
+ - includes 15 minute opening range
+ - Toggle London and Asia off
+ - Toggle Historical
