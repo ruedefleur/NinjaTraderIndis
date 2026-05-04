@@ -1,0 +1,182 @@
+#region Using declarations
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.ComponentModel.DataAnnotations;
+using System.Linq;
+using System.Text;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Xml.Serialization;
+using NinjaTrader.Cbi;
+using NinjaTrader.Gui;
+using NinjaTrader.Gui.Chart;
+using NinjaTrader.NinjaScript;
+using NinjaTrader.Data;
+using NinjaTrader.NinjaScript.DrawingTools;
+#endregion
+
+namespace NinjaTrader.NinjaScript.Indicators
+{
+	public class DynamicTickSizeOptimizer : Indicator
+	{
+		private double 	ticksPerHour;
+		private double 	recommendedRaw;
+		private int 	nearestFib;
+		private string 	displayText = string.Empty;
+		
+		// Fibonacci Sequence for Tick Sizes
+		private readonly int[] fibSizes = { 89, 144, 233, 377, 610, 987, 1597, 2584, 4181, 6765, 10946 };
+
+		protected override void OnStateChange()
+		{
+			if (State == State.SetDefaults)
+			{
+				Description									= @"Measures market activity and recommends the nearest Fibonacci tick bar size.";
+				Name										= "Dynamic Tick Size Optimizer";
+				Calculate									= Calculate.OnEachTick;
+				IsOverlay									= true;
+				DisplayInDataBox							= true;
+				DrawOnPricePanel							= true;
+				IsSuspendedWhileInactive					= true;
+				
+				// User Inputs
+				TargetBarsPerHour 							= 20;
+				LookbackMinutes 							= 20;
+				ShowRawRecommendation 						= false;
+				
+				// Visuals
+				TextFont									= new NinjaTrader.Gui.Tools.SimpleFont("Arial", 16);
+				TextColor									= Brushes.Cyan;
+			}
+		}
+
+		protected override void OnBarUpdate()
+		{
+			// Ensure we have enough data and are in real-time or processing historical
+			if (CurrentBar < 1) return;
+
+			// 1. Calculate the time window
+			DateTime lookbackTime = Time[0].AddMinutes(-LookbackMinutes);
+			
+			// Use Bars.GetBar to find the index for the time
+			int lookbackBarIndex = Bars.GetBar(lookbackTime);
+			
+			if (lookbackBarIndex < 0) return;
+
+			// 2. Sum the ticks (In Tick Charts, Volume = Number of trades/ticks)
+			double totalTicks = 0;
+			
+			// Loop from current bar back to the calculated lookback index
+			for (int i = CurrentBar; i >= lookbackBarIndex; i--)
+			{
+				totalTicks += Volume[CurrentBar - i];
+			}
+
+			// 3. Calculate Rates
+			ticksPerHour = (totalTicks / LookbackMinutes) * 60;
+			recommendedRaw = ticksPerHour / TargetBarsPerHour;
+
+			// 4. Find Nearest Fibonacci Number
+			nearestFib = fibSizes.OrderBy(x => Math.Abs(x - recommendedRaw)).First();
+
+			// 5. Build Display String
+			if (ShowRawRecommendation)
+				displayText = string.Format("{0} (Ideal: {1:F0})", nearestFib, recommendedRaw);
+			else
+				displayText = " " + nearestFib.ToString();
+
+			// 6. Draw to Chart (TextPosition.TopLeft is the NT8 correct enum)
+			Draw.TextFixed(this, "TickOptimizer", displayText, TextPosition.TopLeft, TextColor, TextFont, Brushes.Transparent, Brushes.Transparent, 0);
+		}
+
+		#region Properties
+		[NinjaScriptProperty]
+		[Range(1, int.MaxValue)]
+		[Display(Name="Target Bars Per Hour", Description="How many candles do you want to see per hour? (e.g. 20 = 3min feel)", Order=1, GroupName="Parameters")]
+		public int TargetBarsPerHour { get; set; }
+
+		[NinjaScriptProperty]
+		[Range(1, int.MaxValue)]
+		[Display(Name="Lookback Minutes", Description="How many minutes of history to analyze for current activity", Order=2, GroupName="Parameters")]
+		public int LookbackMinutes { get; set; }
+
+		[NinjaScriptProperty]
+		[Display(Name="Show Raw Recommendation", Description="Show the exact decimal calculation alongside the Fib number", Order=3, GroupName="Parameters")]
+		public bool ShowRawRecommendation { get; set; }
+
+		[Display(Name="Font", Order=1, GroupName="Visuals")]
+		public NinjaTrader.Gui.Tools.SimpleFont TextFont { get; set; }
+
+		[XmlIgnore]
+		[Display(Name="Text Color", Order=2, GroupName="Visuals")]
+		public Brush TextColor { get; set; }
+
+		[Browsable(false)]
+		public string TextColorSerializable
+		{
+			get { return Serialize.BrushToString(TextColor); }
+			set { TextColor = Serialize.StringToBrush(value); }
+		}
+		#endregion
+	}
+}
+
+#region NinjaScript generated code. Neither change nor remove.
+
+namespace NinjaTrader.NinjaScript.Indicators
+{
+	public partial class Indicator : NinjaTrader.Gui.NinjaScript.IndicatorRenderBase
+	{
+		private DynamicTickSizeOptimizer[] cacheDynamicTickSizeOptimizer;
+		public DynamicTickSizeOptimizer DynamicTickSizeOptimizer(int targetBarsPerHour, int lookbackMinutes, bool showRawRecommendation)
+		{
+			return DynamicTickSizeOptimizer(Input, targetBarsPerHour, lookbackMinutes, showRawRecommendation);
+		}
+
+		public DynamicTickSizeOptimizer DynamicTickSizeOptimizer(ISeries<double> input, int targetBarsPerHour, int lookbackMinutes, bool showRawRecommendation)
+		{
+			if (cacheDynamicTickSizeOptimizer != null)
+				for (int idx = 0; idx < cacheDynamicTickSizeOptimizer.Length; idx++)
+					if (cacheDynamicTickSizeOptimizer[idx] != null && cacheDynamicTickSizeOptimizer[idx].TargetBarsPerHour == targetBarsPerHour && cacheDynamicTickSizeOptimizer[idx].LookbackMinutes == lookbackMinutes && cacheDynamicTickSizeOptimizer[idx].ShowRawRecommendation == showRawRecommendation && cacheDynamicTickSizeOptimizer[idx].EqualsInput(input))
+						return cacheDynamicTickSizeOptimizer[idx];
+			return CacheIndicator<DynamicTickSizeOptimizer>(new DynamicTickSizeOptimizer(){ TargetBarsPerHour = targetBarsPerHour, LookbackMinutes = lookbackMinutes, ShowRawRecommendation = showRawRecommendation }, input, ref cacheDynamicTickSizeOptimizer);
+		}
+	}
+}
+
+namespace NinjaTrader.NinjaScript.MarketAnalyzerColumns
+{
+	public partial class MarketAnalyzerColumn : MarketAnalyzerColumnBase
+	{
+		public Indicators.DynamicTickSizeOptimizer DynamicTickSizeOptimizer(int targetBarsPerHour, int lookbackMinutes, bool showRawRecommendation)
+		{
+			return indicator.DynamicTickSizeOptimizer(Input, targetBarsPerHour, lookbackMinutes, showRawRecommendation);
+		}
+
+		public Indicators.DynamicTickSizeOptimizer DynamicTickSizeOptimizer(ISeries<double> input , int targetBarsPerHour, int lookbackMinutes, bool showRawRecommendation)
+		{
+			return indicator.DynamicTickSizeOptimizer(input, targetBarsPerHour, lookbackMinutes, showRawRecommendation);
+		}
+	}
+}
+
+namespace NinjaTrader.NinjaScript.Strategies
+{
+	public partial class Strategy : NinjaTrader.Gui.NinjaScript.StrategyRenderBase
+	{
+		public Indicators.DynamicTickSizeOptimizer DynamicTickSizeOptimizer(int targetBarsPerHour, int lookbackMinutes, bool showRawRecommendation)
+		{
+			return indicator.DynamicTickSizeOptimizer(Input, targetBarsPerHour, lookbackMinutes, showRawRecommendation);
+		}
+
+		public Indicators.DynamicTickSizeOptimizer DynamicTickSizeOptimizer(ISeries<double> input , int targetBarsPerHour, int lookbackMinutes, bool showRawRecommendation)
+		{
+			return indicator.DynamicTickSizeOptimizer(input, targetBarsPerHour, lookbackMinutes, showRawRecommendation);
+		}
+	}
+}
+
+#endregion
