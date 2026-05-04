@@ -23,7 +23,8 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
         private SharpDX.Direct2D1.SolidColorBrush _bullDxBrush, _bearDxBrush, _wickDxBrush, _textDxBrush;
         private SharpDX.Direct2D1.SolidColorBrush _boxDxBrush, _cdoDxBrush, _pdoDxBrush, _pdhDxBrush, _pdlDxBrush, _pdcDxBrush;
         private SharpDX.Direct2D1.SolidColorBrush _asiaDxBrush, _lonDxBrush, _nyDxBrush;
-        
+        private SharpDX.Direct2D1.SolidColorBrush _btnBgDxBrush, _btnTextDxBrush;
+
         private SharpDX.Direct2D1.StrokeStyle _boxDxStyle, _cdoDxStyle, _pdoDxStyle, _pdhDxStyle, _pdlDxStyle, _pdcDxStyle;
         private SharpDX.Direct2D1.StrokeStyle _asiaDxStyle, _lonDxStyle, _nyDxStyle;
 
@@ -31,17 +32,29 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
         private SharpDX.DirectWrite.Factory    _dwFactory;
         private SharpDX.DirectWrite.TextFormat _textFmt;
         private SharpDX.DirectWrite.TextFormat _timerTextFmt;
+        private SharpDX.DirectWrite.TextFormat _btnTextFmt;
 
-        // ── State variables ───────────────────────────────────────────────────
+        // ── Toggle State ──────────────────────────────────────────────────────
+        private bool       _isMinimized   = false;
+        private RectangleF _toggleBtnRect = new RectangleF(0, 0, 1, 1); // hit-test rect, updated each OnRender
+
+        // ── Session State ─────────────────────────────────────────────────────
         private double _curAsiaH = double.MinValue, _curAsiaL = double.MaxValue;
         private double _curLonH  = double.MinValue, _curLonL  = double.MaxValue;
         private double _curNyH   = double.MinValue, _curNyL   = double.MaxValue;
 
-        private int htf1Idx = -1;
-        private int htf2Idx = -1;
+        private int htf1Idx  = -1;
+        private int htf2Idx  = -1;
+        private int htf3Idx  = -1;
+        private int htf4Idx  = -1;
         private int dailyIdx = -1;
 
-        // Helper class for collision detection
+        // ── Button constants ──────────────────────────────────────────────────
+        private const float BtnW  = 62f;
+        private const float BtnH  = 22f;
+        private const float BtnMX = 8f;   // right margin from box edge
+        private const float BtnMY = 6f;   // bottom margin from box / chart bottom
+
         private class LevelLine
         {
             public double Price;
@@ -51,12 +64,22 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
             public string Label;
         }
 
+        // Helper class to manage dynamic layout rendering and collision avoidance
+        private class HTFBlock
+        {
+            public int Idx;
+            public int Count;
+            public float CandlesWidth;
+            public float RelativeX;
+            public float StartX;
+        }
+
         protected override void OnStateChange()
         {
             if (State == State.SetDefaults)
             {
                 Name                     = "HTF Candle Offset v2";
-                Description              = "Draws multiple HTF candles, local Daily/Session lines, and Timers";
+                Description              = "Draws up to 4 HTF candles dynamically scaled, local Daily/Session lines, and Timers";
                 Calculate                = Calculate.OnPriceChange;
                 IsOverlay                = true;
                 DisplayInDataBox         = false;
@@ -64,7 +87,6 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
                 ScaleJustification       = ScaleJustification.Right;
                 IsSuspendedWhileInactive = true;
 
-                // Main Config
                 HTF1Type          = BarsPeriodType.Minute;
                 HTF1Value         = 60;
                 NumCandles1       = 5;
@@ -74,15 +96,24 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
                 HTF2Value         = 240;
                 NumCandles2       = 3;
 
+                ShowHTF3          = false;
+                HTF3Type          = BarsPeriodType.Day;
+                HTF3Value         = 1;
+                NumCandles3       = 3;
+
+                ShowHTF4          = false;
+                HTF4Type          = BarsPeriodType.Week;
+                HTF4Value         = 1;
+                NumCandles4       = 3;
+
                 CandleWidthPx     = 22;
                 CandleGapPx       = 6;
-                RightMarginPx     = 50; 
+                HTFBlockGapPx     = 30; // Minimum gap between the different HTF groups
+                RightMarginPx     = 50;
 
-                // Toggles
                 ShowDailyLevels   = true;
                 ShowSessionLevels = true;
 
-                // Default Sessions (EST typically)
                 AsiaStart         = new TimeSpan(18, 0, 0);
                 AsiaEnd           = new TimeSpan(2, 0, 0);
                 LondonStart       = new TimeSpan(3, 0, 0);
@@ -90,21 +121,17 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
                 NyStart           = new TimeSpan(8, 0, 0);
                 NyEnd             = new TimeSpan(17, 0, 0);
 
-                // Default Fills
                 BullBrush         = System.Windows.Media.Brushes.DodgerBlue;
                 BearBrush         = System.Windows.Media.Brushes.Red;
                 TextBrush         = System.Windows.Media.Brushes.White;
 
-                // Default Strokes
                 WickStroke        = new Stroke(System.Windows.Media.Brushes.Silver, DashStyleHelper.Solid, 1);
                 BoxStroke         = new Stroke(System.Windows.Media.Brushes.Gray, DashStyleHelper.Dash, 1);
-                
                 CdoStroke         = new Stroke(System.Windows.Media.Brushes.Gold, DashStyleHelper.Solid, 2);
                 PdoStroke         = new Stroke(System.Windows.Media.Brushes.DarkOrange, DashStyleHelper.Dash, 1);
                 PdhStroke         = new Stroke(System.Windows.Media.Brushes.Salmon, DashStyleHelper.Dash, 1);
                 PdlStroke         = new Stroke(System.Windows.Media.Brushes.LightGreen, DashStyleHelper.Dash, 1);
                 PdcStroke         = new Stroke(System.Windows.Media.Brushes.Gray, DashStyleHelper.Dash, 1);
-                
                 AsiaStroke        = new Stroke(System.Windows.Media.Brushes.Cyan, DashStyleHelper.Dash, 1);
                 LondonStroke      = new Stroke(System.Windows.Media.Brushes.Magenta, DashStyleHelper.Dash, 1);
                 NyStroke          = new Stroke(System.Windows.Media.Brushes.Orange, DashStyleHelper.Dash, 1);
@@ -113,37 +140,78 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
             {
                 htf1Idx = 1;
                 AddDataSeries(HTF1Type, HTF1Value);
+                
+                int nextIdx = 2;
 
                 if (ShowHTF2)
                 {
-                    htf2Idx = 2;
+                    htf2Idx = nextIdx++;
                     AddDataSeries(HTF2Type, HTF2Value);
-                    dailyIdx = 3;
-                }
-                else
-                {
-                    dailyIdx = 2;
                 }
                 
-                AddDataSeries(BarsPeriodType.Day, 1); // For Day Levels
+                if (ShowHTF3)
+                {
+                    htf3Idx = nextIdx++;
+                    AddDataSeries(HTF3Type, HTF3Value);
+                }
+
+                if (ShowHTF4)
+                {
+                    htf4Idx = nextIdx++;
+                    AddDataSeries(HTF4Type, HTF4Value);
+                }
+
+                dailyIdx = nextIdx;
+                AddDataSeries(BarsPeriodType.Day, 1);
+            }
+            else if (State == State.DataLoaded)
+            {
+                if (ChartControl != null)
+                    ChartControl.MouseDown += OnChartMouseDown;
             }
             else if (State == State.Terminated)
             {
+                if (ChartControl != null)
+                    ChartControl.MouseDown -= OnChartMouseDown;
                 FreeResources();
+            }
+        }
+
+        // ── Mouse toggle ──────────────────────────────────────────────────────
+        private void OnChartMouseDown(object sender, System.Windows.Input.MouseButtonEventArgs e)
+        {
+            if (e.ChangedButton != System.Windows.Input.MouseButton.Left) return;
+            if (ChartControl == null || ChartControl.ChartPanels.Count == 0) return;
+
+            var pos = e.GetPosition(ChartControl as System.Windows.IInputElement);
+            var src  = System.Windows.PresentationSource.FromVisual(ChartControl);
+            double dpiX = src?.CompositionTarget?.TransformToDevice.M11 ?? 1.0;
+            double dpiY = src?.CompositionTarget?.TransformToDevice.M22 ?? 1.0;
+
+            var panel = ChartControl.ChartPanels[0];
+            float px = (float)(pos.X * dpiX) - (float)panel.X;
+            float py = (float)(pos.Y * dpiY) - (float)panel.Y;
+
+            if (px >= _toggleBtnRect.Left && px <= _toggleBtnRect.Right &&
+                py >= _toggleBtnRect.Top  && py <= _toggleBtnRect.Bottom)
+            {
+                _isMinimized = !_isMinimized;
+                e.Handled    = true;
+                ForceRefresh();
             }
         }
 
         protected override void OnBarUpdate()
         {
-            if (CurrentBar < 1 || BarsInProgress != 0 || !ShowSessionLevels) 
+            if (CurrentBar < 1 || BarsInProgress != 0 || !ShowSessionLevels)
                 return;
 
             DateTime t0 = Time[0];
             DateTime t1 = Time[1];
 
-            UpdateSession(t0, t1, AsiaStart, AsiaEnd, ref _curAsiaH, ref _curAsiaL);
-            UpdateSession(t0, t1, LondonStart, LondonEnd, ref _curLonH, ref _curLonL);
-            UpdateSession(t0, t1, NyStart, NyEnd, ref _curNyH, ref _curNyL);
+            UpdateSession(t0, t1, AsiaStart,   AsiaEnd,   ref _curAsiaH, ref _curAsiaL);
+            UpdateSession(t0, t1, LondonStart, LondonEnd, ref _curLonH,  ref _curLonL);
+            UpdateSession(t0, t1, NyStart,     NyEnd,     ref _curNyH,   ref _curNyL);
         }
 
         private void UpdateSession(DateTime t0, DateTime t1, TimeSpan start, TimeSpan end, ref double high, ref double low)
@@ -153,12 +221,12 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
                 if (!IsInTime(t1, start, end) || (t0 - t1).TotalHours > 12)
                 {
                     high = High[0];
-                    low = Low[0];
+                    low  = Low[0];
                 }
                 else
                 {
                     high = Math.Max(high, High[0]);
-                    low = Math.Min(low, Low[0]);
+                    low  = Math.Min(low,  Low[0]);
                 }
             }
         }
@@ -173,23 +241,28 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
         // ── Resources ─────────────────────────────────────────────────────────
         private void FreeResources()
         {
-            _bullDxBrush?.Dispose(); _bearDxBrush?.Dispose(); _wickDxBrush?.Dispose();
-            _textDxBrush?.Dispose(); _boxDxBrush?.Dispose();
-            _cdoDxBrush?.Dispose(); _pdoDxBrush?.Dispose(); _pdhDxBrush?.Dispose();
-            _pdlDxBrush?.Dispose(); _pdcDxBrush?.Dispose();
-            _asiaDxBrush?.Dispose(); _lonDxBrush?.Dispose(); _nyDxBrush?.Dispose();
+            _bullDxBrush?.Dispose();  _bearDxBrush?.Dispose();  _wickDxBrush?.Dispose();
+            _textDxBrush?.Dispose();  _boxDxBrush?.Dispose();
+            _cdoDxBrush?.Dispose();   _pdoDxBrush?.Dispose();   _pdhDxBrush?.Dispose();
+            _pdlDxBrush?.Dispose();   _pdcDxBrush?.Dispose();
+            _asiaDxBrush?.Dispose();  _lonDxBrush?.Dispose();   _nyDxBrush?.Dispose();
+            _btnBgDxBrush?.Dispose(); _btnTextDxBrush?.Dispose();
 
-            _boxDxStyle?.Dispose(); _cdoDxStyle?.Dispose(); _pdoDxStyle?.Dispose();
-            _pdhDxStyle?.Dispose(); _pdlDxStyle?.Dispose(); _pdcDxStyle?.Dispose();
-            _asiaDxStyle?.Dispose(); _lonDxStyle?.Dispose(); _nyDxStyle?.Dispose();
+            _boxDxStyle?.Dispose();  _cdoDxStyle?.Dispose();  _pdoDxStyle?.Dispose();
+            _pdhDxStyle?.Dispose();  _pdlDxStyle?.Dispose();  _pdcDxStyle?.Dispose();
+            _asiaDxStyle?.Dispose(); _lonDxStyle?.Dispose();  _nyDxStyle?.Dispose();
 
-            _textFmt?.Dispose(); _timerTextFmt?.Dispose(); _dwFactory?.Dispose(); _lastRT = null;
+            _textFmt?.Dispose(); _timerTextFmt?.Dispose(); _btnTextFmt?.Dispose();
+            _dwFactory?.Dispose();
+            _lastRT = null;
         }
 
-        private SharpDX.Direct2D1.SolidColorBrush BrushFromWpf(SharpDX.Direct2D1.RenderTarget rt, System.Windows.Media.Brush wpfBrush, float alpha = 1.0f)
+        private SharpDX.Direct2D1.SolidColorBrush BrushFromWpf(SharpDX.Direct2D1.RenderTarget rt,
+            System.Windows.Media.Brush wpfBrush, float alpha = 1.0f)
         {
             if (wpfBrush is System.Windows.Media.SolidColorBrush scb)
-                return new SharpDX.Direct2D1.SolidColorBrush(rt, new Color4(scb.Color.R / 255f, scb.Color.G / 255f, scb.Color.B / 255f, alpha));
+                return new SharpDX.Direct2D1.SolidColorBrush(rt,
+                    new Color4(scb.Color.R / 255f, scb.Color.G / 255f, scb.Color.B / 255f, alpha));
             return new SharpDX.Direct2D1.SolidColorBrush(rt, new Color4(0.5f, 0.5f, 0.5f, alpha));
         }
 
@@ -198,11 +271,11 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
             var props = new StrokeStyleProperties();
             switch (stroke.DashStyleHelper)
             {
-                case DashStyleHelper.Dash: props.DashStyle = SharpDX.Direct2D1.DashStyle.Dash; break;
-                case DashStyleHelper.Dot: props.DashStyle = SharpDX.Direct2D1.DashStyle.Dot; break;
-                case DashStyleHelper.DashDot: props.DashStyle = SharpDX.Direct2D1.DashStyle.DashDot; break;
+                case DashStyleHelper.Dash:       props.DashStyle = SharpDX.Direct2D1.DashStyle.Dash;       break;
+                case DashStyleHelper.Dot:        props.DashStyle = SharpDX.Direct2D1.DashStyle.Dot;        break;
+                case DashStyleHelper.DashDot:    props.DashStyle = SharpDX.Direct2D1.DashStyle.DashDot;    break;
                 case DashStyleHelper.DashDotDot: props.DashStyle = SharpDX.Direct2D1.DashStyle.DashDotDot; break;
-                case DashStyleHelper.Solid: default: props.DashStyle = SharpDX.Direct2D1.DashStyle.Solid; break;
+                default:                         props.DashStyle = SharpDX.Direct2D1.DashStyle.Solid;      break;
             }
             return new SharpDX.Direct2D1.StrokeStyle(rt.Factory, props);
         }
@@ -215,7 +288,6 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
             _bullDxBrush = BrushFromWpf(rt, BullBrush, 0.85f);
             _bearDxBrush = BrushFromWpf(rt, BearBrush, 0.85f);
             _textDxBrush = BrushFromWpf(rt, TextBrush, 1.00f);
-
             _wickDxBrush = BrushFromWpf(rt, WickStroke.Brush, 1.0f);
             _boxDxBrush  = BrushFromWpf(rt, BoxStroke.Brush, 0.5f);
             _cdoDxBrush  = BrushFromWpf(rt, CdoStroke.Brush, 0.8f);
@@ -226,6 +298,9 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
             _asiaDxBrush = BrushFromWpf(rt, AsiaStroke.Brush, 0.8f);
             _lonDxBrush  = BrushFromWpf(rt, LondonStroke.Brush, 0.8f);
             _nyDxBrush   = BrushFromWpf(rt, NyStroke.Brush, 0.8f);
+
+            _btnBgDxBrush   = new SharpDX.Direct2D1.SolidColorBrush(rt, new Color4(0.08f, 0.08f, 0.08f, 0.82f));
+            _btnTextDxBrush = new SharpDX.Direct2D1.SolidColorBrush(rt, new Color4(0.9f, 0.9f, 0.9f, 1.0f));
 
             _boxDxStyle  = StyleFromStroke(rt, BoxStroke);
             _cdoDxStyle  = StyleFromStroke(rt, CdoStroke);
@@ -239,7 +314,6 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
 
             _dwFactory = new SharpDX.DirectWrite.Factory();
 
-            // Label formatting: No wrap ensures it stays cleanly horizontally aligned
             _textFmt = new SharpDX.DirectWrite.TextFormat(_dwFactory, "Arial", 11f)
             {
                 TextAlignment      = SharpDX.DirectWrite.TextAlignment.Leading,
@@ -247,11 +321,17 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
                 WordWrapping       = SharpDX.DirectWrite.WordWrapping.NoWrap
             };
 
-            // Timer formatting: Center aligned and no wrap 
-            _timerTextFmt = new SharpDX.DirectWrite.TextFormat(_dwFactory, "Arial", 11f)
+            _timerTextFmt = new SharpDX.DirectWrite.TextFormat(_dwFactory, "Arial", 22f)
             {
                 TextAlignment      = SharpDX.DirectWrite.TextAlignment.Center,
                 ParagraphAlignment = SharpDX.DirectWrite.ParagraphAlignment.Near,
+                WordWrapping       = SharpDX.DirectWrite.WordWrapping.NoWrap
+            };
+
+            _btnTextFmt = new SharpDX.DirectWrite.TextFormat(_dwFactory, "Arial", 11f)
+            {
+                TextAlignment      = SharpDX.DirectWrite.TextAlignment.Center,
+                ParagraphAlignment = SharpDX.DirectWrite.ParagraphAlignment.Center,
                 WordWrapping       = SharpDX.DirectWrite.WordWrapping.NoWrap
             };
         }
@@ -265,82 +345,158 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
             if (rt == null || rt.IsDisposed) return;
             if (!ReferenceEquals(rt, _lastRT)) BuildResources(rt);
 
-            var htf1 = BarsArray[htf1Idx];
-            int count1 = Math.Min(NumCandles1, htf1.Count);
-            if (count1 == 0) return;
+            float rtW         = rt.Size.Width;
+            float panelBottom = (float)cs.GetYByValue(cs.MinValue); 
 
-            float rtW = rt.Size.Width;
-            float currentX = rtW - RightMarginPx;
-
-            // Determine Space needed for HTF1
-            float htf1TotalW = count1 * (CandleWidthPx + CandleGapPx) - CandleGapPx;
-            currentX -= htf1TotalW;
-            float htf1StartX = currentX;
-
-            // Determine Space needed for HTF2 (if active)
-            float htf2StartX = 0;
-            int count2 = 0;
-            if (ShowHTF2 && htf2Idx > 0 && BarsArray.Length > htf2Idx)
+            // ── Minimised: draw only the toggle pill in bottom-right ──────────
+            if (_isMinimized)
             {
-                var htf2 = BarsArray[htf2Idx];
-                count2 = Math.Min(NumCandles2, htf2.Count);
-                if (count2 > 0)
-                {
-                    float htf2TotalW = count2 * (CandleWidthPx + CandleGapPx) - CandleGapPx;
-                    currentX -= 50f; // Gap between multiple time frames
-                    currentX -= htf2TotalW;
-                    htf2StartX = currentX;
-                }
+                float btnX = rtW - RightMarginPx - BtnW - BtnMX;
+                float btnY = panelBottom - BtnH - BtnMY;
+                _toggleBtnRect = new RectangleF(btnX, btnY, BtnW, BtnH);
+
+                rt.FillRectangle(_toggleBtnRect, _btnBgDxBrush);
+                rt.DrawRectangle(_toggleBtnRect, _boxDxBrush, 1f, _boxDxStyle);
+                rt.DrawText("HTF  ▶", _btnTextFmt, _toggleBtnRect, _btnTextDxBrush);
+                return;
             }
 
-            // Outer Box spanning the whole vertical chart
-            float boxStartX = currentX - 15f;
-            float boxW = (rtW - RightMarginPx) - boxStartX + 20f;
-            var fullYBox = new RectangleF(boxStartX, 0, boxW, rt.Size.Height);
+            // ── Expanded path: Dynamic scale and layout computation ───────────
+            List<HTFBlock> activeBlocks = new List<HTFBlock>();
 
-            // Render Candles
-            if (count1 > 0) RenderCandles(rt, cs, htf1, count1, htf1StartX);
-            if (count2 > 0) RenderCandles(rt, cs, BarsArray[htf2Idx], count2, htf2StartX);
+            if (htf1Idx > 0 && BarsArray.Length > htf1Idx)
+            {
+                int c = Math.Min(NumCandles1, BarsArray[htf1Idx].Count);
+                if (c > 0) activeBlocks.Add(new HTFBlock { Idx = htf1Idx, Count = c });
+            }
+            if (ShowHTF2 && htf2Idx > 0 && BarsArray.Length > htf2Idx)
+            {
+                int c = Math.Min(NumCandles2, BarsArray[htf2Idx].Count);
+                if (c > 0) activeBlocks.Add(new HTFBlock { Idx = htf2Idx, Count = c });
+            }
+            if (ShowHTF3 && htf3Idx > 0 && BarsArray.Length > htf3Idx)
+            {
+                int c = Math.Min(NumCandles3, BarsArray[htf3Idx].Count);
+                if (c > 0) activeBlocks.Add(new HTFBlock { Idx = htf3Idx, Count = c });
+            }
+            if (ShowHTF4 && htf4Idx > 0 && BarsArray.Length > htf4Idx)
+            {
+                int c = Math.Min(NumCandles4, BarsArray[htf4Idx].Count);
+                if (c > 0) activeBlocks.Add(new HTFBlock { Idx = htf4Idx, Count = c });
+            }
 
-            // Draw Box Outline
+            if (activeBlocks.Count == 0) return;
+
+            // PRE-PASS: Layout blocks relative to 0, ensuring no overlapping text timers!
+            float currentRelativeX = 0f;
+            for (int i = 0; i < activeBlocks.Count; i++)
+            {
+                var block = activeBlocks[i];
+                block.CandlesWidth = (block.Count * (CandleWidthPx + CandleGapPx)) - CandleGapPx;
+                block.RelativeX    = currentRelativeX;
+
+                float nextRelativeX = currentRelativeX + block.CandlesWidth + HTFBlockGapPx;
+
+                // Check for timer overlap with the next group
+                if (i < activeBlocks.Count - 1)
+                {
+                    var nextBlock = activeBlocks[i + 1];
+                    float nextCandlesW = (nextBlock.Count * (CandleWidthPx + CandleGapPx)) - CandleGapPx;
+
+                    // The timer is drawn over the LAST candle of a block.
+                    // Its right edge is 40px from the center of that candle.
+                    float timerN_Right = block.RelativeX + block.CandlesWidth - (CandleWidthPx / 2f) + 40f;
+                    
+                    // The next timer is drawn over the LAST candle of the NEXT block.
+                    // Its left edge is 40px left from the center of that candle.
+                    float timerNext_Left = nextRelativeX + nextCandlesW - (CandleWidthPx / 2f) - 40f;
+
+                    // If the text blocks collide, dynamically push the next group further right!
+                    if (timerN_Right + 15f > timerNext_Left) // 15px safety gap between text
+                    {
+                        nextRelativeX += (timerN_Right + 15f - timerNext_Left);
+                    }
+                }
+                currentRelativeX = nextRelativeX;
+            }
+
+            // Calculate total required width encompassing all candles AND timer text overhangs
+            var firstBlock = activeBlocks[0];
+            float firstTimerLeft = firstBlock.RelativeX + firstBlock.CandlesWidth - (CandleWidthPx / 2f) - 40f;
+            float leftOverhang   = firstTimerLeft < 0 ? -firstTimerLeft : 0f;
+
+            var lastBlock = activeBlocks[activeBlocks.Count - 1];
+            float lastTimerRight    = lastBlock.RelativeX + lastBlock.CandlesWidth - (CandleWidthPx / 2f) + 40f;
+            float totalCandlesWidth = lastBlock.RelativeX + lastBlock.CandlesWidth;
+            
+            float maxRightEdge       = Math.Max(totalCandlesWidth, lastTimerRight);
+            float totalRequiredWidth = maxRightEdge + leftOverhang;
+
+            // Anchor exact drawing coordinates to the right side of the screen
+            float rightEdgeBound = rtW - RightMarginPx;
+            float startDrawingX  = rightEdgeBound - totalRequiredWidth + leftOverhang;
+
+            float boxPadding = 15f;
+            float boxStartX  = startDrawingX - leftOverhang - boxPadding;
+            float boxW       = totalRequiredWidth + (boxPadding * 2);
+            var   fullYBox   = new RectangleF(boxStartX, 0, boxW, panelBottom);
+
+            // Draw box background/outline
             rt.DrawRectangle(fullYBox, _boxDxBrush, BoxStroke.Width, _boxDxStyle);
 
-            // Render Timers positioned above the newest candle of each series inside the box
             float topY = 5f;
-            if (count1 > 0) DrawTimer(rt, htf1, htf1StartX, topY, count1);
-            if (count2 > 0) DrawTimer(rt, BarsArray[htf2Idx], htf2StartX, topY, count2);
 
-            // Gather and Render Masked Levels
+            // Draw each active HTF perfectly aligned
+            foreach (var block in activeBlocks)
+            {
+                block.StartX = startDrawingX + block.RelativeX;
+                
+                RenderCandles(rt, cs, BarsArray[block.Idx], block.Count, block.StartX);
+                DrawTimer(rt, BarsArray[block.Idx], block.StartX, topY, block.Count);
+            }
+
+            // Levels clipped to box
             rt.PushAxisAlignedClip(fullYBox, SharpDX.Direct2D1.AntialiasMode.PerPrimitive);
-            
-            List<LevelLine> levels = new List<LevelLine>();
+
+            var levels = new List<LevelLine>();
 
             if (ShowDailyLevels && BarsArray.Length > dailyIdx)
             {
                 var dayBars = BarsArray[dailyIdx];
                 if (dayBars.Count > 1)
                 {
-                    levels.Add(new LevelLine { Price = dayBars.GetOpen(dayBars.Count - 2), Brush = _pdoDxBrush, Width = PdoStroke.Width, Style = _pdoDxStyle, Label = "PDO" });
-                    levels.Add(new LevelLine { Price = dayBars.GetHigh(dayBars.Count - 2), Brush = _pdhDxBrush, Width = PdhStroke.Width, Style = _pdhDxStyle, Label = "PDH" });
-                    levels.Add(new LevelLine { Price = dayBars.GetLow(dayBars.Count - 2), Brush = _pdlDxBrush, Width = PdlStroke.Width, Style = _pdlDxStyle, Label = "PDL" });
-                    levels.Add(new LevelLine { Price = dayBars.GetClose(dayBars.Count - 2), Brush = _pdcDxBrush, Width = PdcStroke.Width, Style = _pdcDxStyle, Label = "PDC" });
-                    levels.Add(new LevelLine { Price = dayBars.GetOpen(dayBars.Count - 1), Brush = _cdoDxBrush, Width = CdoStroke.Width, Style = _cdoDxStyle, Label = "CDO" });
+                    int prev = dayBars.Count - 2;
+                    int curr = dayBars.Count - 1;
+                    levels.Add(new LevelLine { Price = dayBars.GetOpen(prev),  Brush = _pdoDxBrush, Width = PdoStroke.Width, Style = _pdoDxStyle, Label = "PDO" });
+                    levels.Add(new LevelLine { Price = dayBars.GetHigh(prev),  Brush = _pdhDxBrush, Width = PdhStroke.Width, Style = _pdhDxStyle, Label = "PDH" });
+                    levels.Add(new LevelLine { Price = dayBars.GetLow(prev),   Brush = _pdlDxBrush, Width = PdlStroke.Width, Style = _pdlDxStyle, Label = "PDL" });
+                    levels.Add(new LevelLine { Price = dayBars.GetClose(prev), Brush = _pdcDxBrush, Width = PdcStroke.Width, Style = _pdcDxStyle, Label = "PDC" });
+                    levels.Add(new LevelLine { Price = dayBars.GetOpen(curr),  Brush = _cdoDxBrush, Width = CdoStroke.Width, Style = _cdoDxStyle, Label = "CDO" });
                 }
             }
 
             if (ShowSessionLevels)
             {
-                if (_curAsiaH != double.MinValue) levels.Add(new LevelLine { Price = _curAsiaH, Brush = _asiaDxBrush, Width = AsiaStroke.Width, Style = _asiaDxStyle, Label = "Asia H" });
-                if (_curAsiaL != double.MaxValue) levels.Add(new LevelLine { Price = _curAsiaL, Brush = _asiaDxBrush, Width = AsiaStroke.Width, Style = _asiaDxStyle, Label = "Asia L" });
-                if (_curLonH != double.MinValue)  levels.Add(new LevelLine { Price = _curLonH, Brush = _lonDxBrush, Width = LondonStroke.Width, Style = _lonDxStyle, Label = "Lon H" });
-                if (_curLonL != double.MaxValue)  levels.Add(new LevelLine { Price = _curLonL, Brush = _lonDxBrush, Width = LondonStroke.Width, Style = _lonDxStyle, Label = "Lon L" });
-                if (_curNyH != double.MinValue)   levels.Add(new LevelLine { Price = _curNyH, Brush = _nyDxBrush, Width = NyStroke.Width, Style = _nyDxStyle, Label = "NY H" });
-                if (_curNyL != double.MaxValue)   levels.Add(new LevelLine { Price = _curNyL, Brush = _nyDxBrush, Width = NyStroke.Width, Style = _nyDxStyle, Label = "NY L" });
+                if (_curAsiaH != double.MinValue) levels.Add(new LevelLine { Price = _curAsiaH, Brush = _asiaDxBrush, Width = AsiaStroke.Width,   Style = _asiaDxStyle, Label = "Asia H" });
+                if (_curAsiaL != double.MaxValue) levels.Add(new LevelLine { Price = _curAsiaL, Brush = _asiaDxBrush, Width = AsiaStroke.Width,   Style = _asiaDxStyle, Label = "Asia L" });
+                if (_curLonH  != double.MinValue) levels.Add(new LevelLine { Price = _curLonH,  Brush = _lonDxBrush,  Width = LondonStroke.Width, Style = _lonDxStyle,  Label = "Lon H"  });
+                if (_curLonL  != double.MaxValue) levels.Add(new LevelLine { Price = _curLonL,  Brush = _lonDxBrush,  Width = LondonStroke.Width, Style = _lonDxStyle,  Label = "Lon L"  });
+                if (_curNyH   != double.MinValue) levels.Add(new LevelLine { Price = _curNyH,   Brush = _nyDxBrush,   Width = NyStroke.Width,     Style = _nyDxStyle,   Label = "NY H"   });
+                if (_curNyL   != double.MaxValue) levels.Add(new LevelLine { Price = _curNyL,   Brush = _nyDxBrush,   Width = NyStroke.Width,     Style = _nyDxStyle,   Label = "NY L"   });
             }
 
             RenderLevelsWithCollisionHandling(rt, cs, levels, fullYBox.Left, fullYBox.Right);
 
             rt.PopAxisAlignedClip();
+
+            // ── Toggle button: bottom-right corner of the box ─────────────────
+            float bx = fullYBox.Right - BtnW - BtnMX;
+            float by = panelBottom - BtnH - BtnMY;
+            _toggleBtnRect = new RectangleF(bx, by, BtnW, BtnH);
+
+            rt.FillRectangle(_toggleBtnRect, _btnBgDxBrush);
+            rt.DrawRectangle(_toggleBtnRect, _boxDxBrush, 1f, _boxDxStyle);
+            rt.DrawText("◀ Hide", _btnTextFmt, _toggleBtnRect, _btnTextDxBrush);
         }
 
         private void DrawTimer(SharpDX.Direct2D1.RenderTarget rt, Bars bars, float startX, float y, int count)
@@ -349,16 +505,15 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
             if (State == State.Realtime)
             {
                 DateTime htfCloseTime = bars.GetTime(bars.Count - 1);
-                TimeSpan rem = htfCloseTime - Core.Globals.Now;
+                TimeSpan rem          = htfCloseTime - Core.Globals.Now;
                 if (rem.TotalSeconds < 0) rem = TimeSpan.Zero;
                 timerStr = string.Format("{0:00}:{1:00}", Math.Floor(rem.TotalMinutes), rem.Seconds);
             }
 
-            // Calculate the X position perfectly centered over the last (rightmost) candle of this HTF series
+            // Centred over the newest (rightmost) candle of this block
             float lastCandleX = startX + (count - 1) * (CandleWidthPx + CandleGapPx);
-            float centerX = lastCandleX + (CandleWidthPx * 0.5f);
-
-            rt.DrawText(timerStr, _timerTextFmt, new RectangleF(centerX - 30f, y, 60f, 20f), _textDxBrush);
+            float centerX     = lastCandleX + CandleWidthPx * 0.5f;
+            rt.DrawText(timerStr, _timerTextFmt, new RectangleF(centerX - 40f, y, 80f, 30f), _textDxBrush);
         }
 
         private void RenderCandles(SharpDX.Direct2D1.RenderTarget rt, ChartScale cs, Bars htfBars, int count, float startX)
@@ -366,16 +521,16 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
             int available = htfBars.Count;
             for (int i = count - 1; i >= 0; i--)
             {
-                int absIdx = available - 1 - i;
-                double o = htfBars.GetOpen(absIdx);
-                double h = htfBars.GetHigh(absIdx);
-                double l = htfBars.GetLow(absIdx);
-                double c = htfBars.GetClose(absIdx);
-                bool bull = c >= o;
+                int    absIdx = available - 1 - i;
+                double o      = htfBars.GetOpen(absIdx);
+                double h      = htfBars.GetHigh(absIdx);
+                double l      = htfBars.GetLow(absIdx);
+                double c      = htfBars.GetClose(absIdx);
+                bool   bull   = c >= o;
 
-                int slot = (count - 1) - i;
-                float x = startX + slot * (CandleWidthPx + CandleGapPx);
-                float cx = x + CandleWidthPx * 0.5f;
+                int   slot = (count - 1) - i;
+                float x    = startX + slot * (CandleWidthPx + CandleGapPx);
+                float cx   = x + CandleWidthPx * 0.5f;
 
                 float yO = (float)cs.GetYByValue(o);
                 float yH = (float)cs.GetYByValue(h);
@@ -384,10 +539,10 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
 
                 float bodyTop = Math.Min(yO, yC);
                 float bodyBot = Math.Max(yO, yC);
-                float bodyH = Math.Max(1.5f, bodyBot - bodyTop);
+                float bodyH   = Math.Max(1.5f, bodyBot - bodyTop);
 
-                if (yH < bodyTop) rt.DrawLine(new Vector2(cx, yH), new Vector2(cx, bodyTop), _wickDxBrush, WickStroke.Width);
-                if (yL > bodyBot) rt.DrawLine(new Vector2(cx, bodyBot), new Vector2(cx, yL), _wickDxBrush, WickStroke.Width);
+                if (yH < bodyTop) rt.DrawLine(new Vector2(cx, yH),      new Vector2(cx, bodyTop), _wickDxBrush, WickStroke.Width);
+                if (yL > bodyBot) rt.DrawLine(new Vector2(cx, bodyBot), new Vector2(cx, yL),      _wickDxBrush, WickStroke.Width);
 
                 var rect = new RectangleF(x, bodyTop, CandleWidthPx, bodyH);
                 rt.FillRectangle(rect, bull ? _bullDxBrush : _bearDxBrush);
@@ -395,9 +550,10 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
             }
         }
 
-        private void RenderLevelsWithCollisionHandling(SharpDX.Direct2D1.RenderTarget rt, ChartScale cs, List<LevelLine> levels, float boxLeft, float boxRight)
+        private void RenderLevelsWithCollisionHandling(SharpDX.Direct2D1.RenderTarget rt, ChartScale cs,
+            List<LevelLine> levels, float boxLeft, float boxRight)
         {
-            List<RectangleF> drawnRects = new List<RectangleF>();
+            var drawnRects = new List<RectangleF>();
 
             foreach (var line in levels)
             {
@@ -406,24 +562,23 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
 
                 float textX = boxLeft + 4f;
                 float textY = y - 16f;
-                if (textY < 0) textY = y + 2f; 
+                if (textY < 0) textY = y + 2f;
 
-                float shiftWidth = 50f; // Distance to push label when a collision happens
-                RectangleF collBox = new RectangleF(textX, textY, shiftWidth, 14f);
+                const float shiftWidth = 50f;
+                var collBox = new RectangleF(textX, textY, shiftWidth, 14f);
 
-                // Side-by-side collision loop
                 bool overlap = true;
-                int safety = 0;
+                int  safety  = 0;
                 while (overlap && safety < 10)
                 {
                     overlap = false;
                     foreach (var drawn in drawnRects)
                     {
-                        if (collBox.Left < drawn.Right && collBox.Right > drawn.Left && 
-                            collBox.Top < drawn.Bottom && collBox.Bottom > drawn.Top)
+                        if (collBox.Left < drawn.Right && collBox.Right > drawn.Left &&
+                            collBox.Top  < drawn.Bottom && collBox.Bottom > drawn.Top)
                         {
-                            collBox.Left += shiftWidth + 5f; // Push right
-                            collBox.Right = collBox.Left + shiftWidth;
+                            collBox.Left  += shiftWidth + 5f;
+                            collBox.Right  = collBox.Left + shiftWidth;
                             overlap = true;
                             break;
                         }
@@ -432,15 +587,13 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
                 }
 
                 drawnRects.Add(collBox);
-
-                // Use an arbitrarily wide rect specifically for drawing to absolutely ensure zero text cutoff
-                RectangleF drawRect = new RectangleF(collBox.Left, collBox.Top, 200f, 14f);
-                rt.DrawText(line.Label, _textFmt, drawRect, line.Brush);
+                rt.DrawText(line.Label, _textFmt, new RectangleF(collBox.Left, collBox.Top, 200f, 14f), line.Brush);
             }
         }
 
         // ── Properties ────────────────────────────────────────────────────────
 
+        // HTF 1
         [NinjaScriptProperty]
         [Display(Name = "1. HTF 1 Type", GroupName = "1. HTF 1 Settings", Order = 0)]
         public BarsPeriodType HTF1Type { get; set; }
@@ -453,8 +606,9 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
         [Display(Name = "3. Num Candles 1", GroupName = "1. HTF 1 Settings", Order = 2)]
         public int NumCandles1 { get; set; }
 
+        // HTF 2
         [NinjaScriptProperty]
-        [Display(Name = "1. Show Secondary HTF", GroupName = "2. HTF 2 Settings", Order = 0)]
+        [Display(Name = "1. Show HTF 2", GroupName = "2. HTF 2 Settings", Order = 0)]
         public bool ShowHTF2 { get; set; }
 
         [NinjaScriptProperty]
@@ -469,142 +623,153 @@ namespace NinjaTrader.NinjaScript.Indicators.TradersPack
         [Display(Name = "4. Num Candles 2", GroupName = "2. HTF 2 Settings", Order = 3)]
         public int NumCandles2 { get; set; }
 
+        // HTF 3
         [NinjaScriptProperty]
-        [Display(Name = "Candle Width (px)", GroupName = "3. Layout Settings", Order = 1)]
+        [Display(Name = "1. Show HTF 3", GroupName = "3. HTF 3 Settings", Order = 0)]
+        public bool ShowHTF3 { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "2. HTF 3 Type", GroupName = "3. HTF 3 Settings", Order = 1)]
+        public BarsPeriodType HTF3Type { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "3. HTF 3 Value", GroupName = "3. HTF 3 Settings", Order = 2)]
+        public int HTF3Value { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "4. Num Candles 3", GroupName = "3. HTF 3 Settings", Order = 3)]
+        public int NumCandles3 { get; set; }
+
+        // HTF 4
+        [NinjaScriptProperty]
+        [Display(Name = "1. Show HTF 4", GroupName = "4. HTF 4 Settings", Order = 0)]
+        public bool ShowHTF4 { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "2. HTF 4 Type", GroupName = "4. HTF 4 Settings", Order = 1)]
+        public BarsPeriodType HTF4Type { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "3. HTF 4 Value", GroupName = "4. HTF 4 Settings", Order = 2)]
+        public int HTF4Value { get; set; }
+
+        [NinjaScriptProperty]
+        [Display(Name = "4. Num Candles 4", GroupName = "4. HTF 4 Settings", Order = 3)]
+        public int NumCandles4 { get; set; }
+
+
+        // Layout
+        [NinjaScriptProperty]
+        [Display(Name = "Candle Width (px)", GroupName = "5. Layout Settings", Order = 1)]
         public int CandleWidthPx { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Candle Gap (px)", GroupName = "3. Layout Settings", Order = 2)]
+        [Display(Name = "Candle Gap (px)", GroupName = "5. Layout Settings", Order = 2)]
         public int CandleGapPx { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Right Margin Offset", GroupName = "3. Layout Settings", Order = 3)]
-        public int RightMarginPx { get; set; }
+        [Display(Name = "Gap Between HTF Groups (px)", GroupName = "5. Layout Settings", Order = 3)]
+        public int HTFBlockGapPx { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Daily Levels", GroupName = "4. Levels", Order = 0)]
+        [Display(Name = "Right Margin Offset", GroupName = "5. Layout Settings", Order = 4)]
+        public int RightMarginPx { get; set; }
+
+
+        // Levels
+        [NinjaScriptProperty]
+        [Display(Name = "Show Daily Levels", GroupName = "6. Levels", Order = 0)]
         public bool ShowDailyLevels { get; set; }
 
         [NinjaScriptProperty]
-        [Display(Name = "Show Session Levels", GroupName = "4. Levels", Order = 1)]
+        [Display(Name = "Show Session Levels", GroupName = "6. Levels", Order = 1)]
         public bool ShowSessionLevels { get; set; }
 
         // Session Times
-        [NinjaScriptProperty] [XmlIgnore] [Display(Name = "Asia Start Time", GroupName = "5. Sessions", Order = 0)]
+        [NinjaScriptProperty] [XmlIgnore] [Display(Name = "Asia Start Time", GroupName = "7. Sessions", Order = 0)]
         public TimeSpan AsiaStart { get; set; }
         [Browsable(false)] public string AsiaStartSerializable { get { return AsiaStart.ToString(); } set { AsiaStart = TimeSpan.Parse(value); } }
 
-        [NinjaScriptProperty] [XmlIgnore] [Display(Name = "Asia End Time", GroupName = "5. Sessions", Order = 1)]
+        [NinjaScriptProperty] [XmlIgnore] [Display(Name = "Asia End Time", GroupName = "7. Sessions", Order = 1)]
         public TimeSpan AsiaEnd { get; set; }
         [Browsable(false)] public string AsiaEndSerializable { get { return AsiaEnd.ToString(); } set { AsiaEnd = TimeSpan.Parse(value); } }
 
-        [NinjaScriptProperty] [XmlIgnore] [Display(Name = "London Start Time", GroupName = "5. Sessions", Order = 2)]
+        [NinjaScriptProperty] [XmlIgnore] [Display(Name = "London Start Time", GroupName = "7. Sessions", Order = 2)]
         public TimeSpan LondonStart { get; set; }
         [Browsable(false)] public string LondonStartSerializable { get { return LondonStart.ToString(); } set { LondonStart = TimeSpan.Parse(value); } }
 
-        [NinjaScriptProperty] [XmlIgnore] [Display(Name = "London End Time", GroupName = "5. Sessions", Order = 3)]
+        [NinjaScriptProperty] [XmlIgnore] [Display(Name = "London End Time", GroupName = "7. Sessions", Order = 3)]
         public TimeSpan LondonEnd { get; set; }
         [Browsable(false)] public string LondonEndSerializable { get { return LondonEnd.ToString(); } set { LondonEnd = TimeSpan.Parse(value); } }
 
-        [NinjaScriptProperty] [XmlIgnore] [Display(Name = "NY Start Time", GroupName = "5. Sessions", Order = 4)]
+        [NinjaScriptProperty] [XmlIgnore] [Display(Name = "NY Start Time", GroupName = "7. Sessions", Order = 4)]
         public TimeSpan NyStart { get; set; }
         [Browsable(false)] public string NyStartSerializable { get { return NyStart.ToString(); } set { NyStart = TimeSpan.Parse(value); } }
 
-        [NinjaScriptProperty] [XmlIgnore] [Display(Name = "NY End Time", GroupName = "5. Sessions", Order = 5)]
+        [NinjaScriptProperty] [XmlIgnore] [Display(Name = "NY End Time", GroupName = "7. Sessions", Order = 5)]
         public TimeSpan NyEnd { get; set; }
         [Browsable(false)] public string NyEndSerializable { get { return NyEnd.ToString(); } set { NyEnd = TimeSpan.Parse(value); } }
 
-        // ── Safe Backing Fields for Brushes (Fixes NinjaTrader Cross-Thread issues) ──
+        // ── Safe Backing Fields for Brushes ───────────────────────────────────
         private System.Windows.Media.Brush _bullBrush;
         private System.Windows.Media.Brush _bearBrush;
         private System.Windows.Media.Brush _textBrush;
 
-        [NinjaScriptProperty] 
-        [XmlIgnore] 
-        [Display(Name = "Bull Color", GroupName = "6. Fills & Text", Order = 0)]
-        public System.Windows.Media.Brush BullBrush 
-        { 
-            get { return _bullBrush; } 
-            set { _bullBrush = value; if (_bullBrush != null && _bullBrush.CanFreeze) _bullBrush.Freeze(); } 
+        [NinjaScriptProperty]
+        [XmlIgnore]
+        [Display(Name = "Bull Color", GroupName = "8. Fills & Text", Order = 0)]
+        public System.Windows.Media.Brush BullBrush
+        {
+            get { return _bullBrush; }
+            set { _bullBrush = value; if (_bullBrush != null && _bullBrush.CanFreeze) _bullBrush.Freeze(); }
         }
-        [Browsable(false)] 
-        public string BullBrushSer 
-        { 
-            get { return _bullBrush != null ? _bullBrush.ToString() : ""; } 
-            set { 
-                var b = (System.Windows.Media.Brush)new BrushConverter().ConvertFromString(value); 
-                if (b != null && b.CanFreeze) b.Freeze(); 
-                _bullBrush = b; 
-            } 
+        [Browsable(false)]
+        public string BullBrushSer
+        {
+            get { return _bullBrush != null ? _bullBrush.ToString() : ""; }
+            set { var b = (System.Windows.Media.Brush)new BrushConverter().ConvertFromString(value); if (b != null && b.CanFreeze) b.Freeze(); _bullBrush = b; }
         }
 
-        [NinjaScriptProperty] 
-        [XmlIgnore] 
-        [Display(Name = "Bear Color", GroupName = "6. Fills & Text", Order = 1)]
-        public System.Windows.Media.Brush BearBrush 
-        { 
-            get { return _bearBrush; } 
-            set { _bearBrush = value; if (_bearBrush != null && _bearBrush.CanFreeze) _bearBrush.Freeze(); } 
+        [NinjaScriptProperty]
+        [XmlIgnore]
+        [Display(Name = "Bear Color", GroupName = "8. Fills & Text", Order = 1)]
+        public System.Windows.Media.Brush BearBrush
+        {
+            get { return _bearBrush; }
+            set { _bearBrush = value; if (_bearBrush != null && _bearBrush.CanFreeze) _bearBrush.Freeze(); }
         }
-        [Browsable(false)] 
-        public string BearBrushSer 
-        { 
-            get { return _bearBrush != null ? _bearBrush.ToString() : ""; } 
-            set { 
-                var b = (System.Windows.Media.Brush)new BrushConverter().ConvertFromString(value); 
-                if (b != null && b.CanFreeze) b.Freeze(); 
-                _bearBrush = b; 
-            } 
+        [Browsable(false)]
+        public string BearBrushSer
+        {
+            get { return _bearBrush != null ? _bearBrush.ToString() : ""; }
+            set { var b = (System.Windows.Media.Brush)new BrushConverter().ConvertFromString(value); if (b != null && b.CanFreeze) b.Freeze(); _bearBrush = b; }
         }
 
-        [NinjaScriptProperty] 
-        [XmlIgnore] 
-        [Display(Name = "Timer Text Color", GroupName = "6. Fills & Text", Order = 2)]
-        public System.Windows.Media.Brush TextBrush 
-        { 
-            get { return _textBrush; } 
-            set { _textBrush = value; if (_textBrush != null && _textBrush.CanFreeze) _textBrush.Freeze(); } 
+        [NinjaScriptProperty]
+        [XmlIgnore]
+        [Display(Name = "Timer Text Color", GroupName = "8. Fills & Text", Order = 2)]
+        public System.Windows.Media.Brush TextBrush
+        {
+            get { return _textBrush; }
+            set { _textBrush = value; if (_textBrush != null && _textBrush.CanFreeze) _textBrush.Freeze(); }
         }
-        [Browsable(false)] 
-        public string TextBrushSer 
-        { 
-            get { return _textBrush != null ? _textBrush.ToString() : ""; } 
-            set { 
-                var b = (System.Windows.Media.Brush)new BrushConverter().ConvertFromString(value); 
-                if (b != null && b.CanFreeze) b.Freeze(); 
-                _textBrush = b; 
-            } 
+        [Browsable(false)]
+        public string TextBrushSer
+        {
+            get { return _textBrush != null ? _textBrush.ToString() : ""; }
+            set { var b = (System.Windows.Media.Brush)new BrushConverter().ConvertFromString(value); if (b != null && b.CanFreeze) b.Freeze(); _textBrush = b; }
         }
 
-        // Strokes (Lines)
-        [NinjaScriptProperty] [Display(Name = "Wick Stroke", GroupName = "7. Lines", Order = 0)]
-        public Stroke WickStroke { get; set; }
-
-        [NinjaScriptProperty] [Display(Name = "Box Outline Stroke", GroupName = "7. Lines", Order = 1)]
-        public Stroke BoxStroke { get; set; }
-
-        [NinjaScriptProperty] [Display(Name = "Current Day Open (CDO)", GroupName = "7. Lines", Order = 2)]
-        public Stroke CdoStroke { get; set; }
-
-        [NinjaScriptProperty] [Display(Name = "Prior Day Open (PDO)", GroupName = "7. Lines", Order = 3)]
-        public Stroke PdoStroke { get; set; }
-
-        [NinjaScriptProperty] [Display(Name = "Prior Day High (PDH)", GroupName = "7. Lines", Order = 4)]
-        public Stroke PdhStroke { get; set; }
-
-        [NinjaScriptProperty] [Display(Name = "Prior Day Low (PDL)", GroupName = "7. Lines", Order = 5)]
-        public Stroke PdlStroke { get; set; }
-
-        [NinjaScriptProperty] [Display(Name = "Prior Day Close (PDC)", GroupName = "7. Lines", Order = 6)]
-        public Stroke PdcStroke { get; set; }
-
-        [NinjaScriptProperty] [Display(Name = "Asia H/L", GroupName = "7. Lines", Order = 7)]
-        public Stroke AsiaStroke { get; set; }
-
-        [NinjaScriptProperty] [Display(Name = "London H/L", GroupName = "7. Lines", Order = 8)]
-        public Stroke LondonStroke { get; set; }
-
-        [NinjaScriptProperty] [Display(Name = "NY H/L", GroupName = "7. Lines", Order = 9)]
-        public Stroke NyStroke { get; set; }
+        // Strokes
+        [NinjaScriptProperty] [Display(Name = "Wick Stroke",              GroupName = "9. Lines", Order = 0)] public Stroke WickStroke   { get; set; }
+        [NinjaScriptProperty] [Display(Name = "Box Outline Stroke",       GroupName = "9. Lines", Order = 1)] public Stroke BoxStroke    { get; set; }
+        [NinjaScriptProperty] [Display(Name = "Current Day Open (CDO)",   GroupName = "9. Lines", Order = 2)] public Stroke CdoStroke    { get; set; }
+        [NinjaScriptProperty] [Display(Name = "Prior Day Open (PDO)",     GroupName = "9. Lines", Order = 3)] public Stroke PdoStroke    { get; set; }
+        [NinjaScriptProperty] [Display(Name = "Prior Day High (PDH)",     GroupName = "9. Lines", Order = 4)] public Stroke PdhStroke    { get; set; }
+        [NinjaScriptProperty] [Display(Name = "Prior Day Low (PDL)",      GroupName = "9. Lines", Order = 5)] public Stroke PdlStroke    { get; set; }
+        [NinjaScriptProperty] [Display(Name = "Prior Day Close (PDC)",    GroupName = "9. Lines", Order = 6)] public Stroke PdcStroke    { get; set; }
+        [NinjaScriptProperty] [Display(Name = "Asia H/L",                 GroupName = "9. Lines", Order = 7)] public Stroke AsiaStroke   { get; set; }
+        [NinjaScriptProperty] [Display(Name = "London H/L",               GroupName = "9. Lines", Order = 8)] public Stroke LondonStroke { get; set; }
+        [NinjaScriptProperty] [Display(Name = "NY H/L",                   GroupName = "9. Lines", Order = 9)] public Stroke NyStroke     { get; set; }
     }
 }
